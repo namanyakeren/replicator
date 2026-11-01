@@ -1,0 +1,30 @@
+# Apache: konfigurasi keamanan untuk folder dashboard.
+# Document root yang disarankan adalah folder ini (bukan folder proyek).
+
+Options -Indexes
+
+# Teruskan header Authorization ke PHP saat memakai CGI/FastCGI,
+# sehingga Basic Auth tetap bekerja.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
+
+# Header keamanan tambahan (PHP juga mengirim header yang sama).
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+</IfModule>
+
+# Jangan pernah menyajikan file konfigurasi, log, atau cadangan.
+<FilesMatch "\.(ini|log|json|md|sql|bak|old|swp|tmp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

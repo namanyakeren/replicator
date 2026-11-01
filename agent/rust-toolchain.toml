@@ -1,0 +1,5 @@
+[toolchain]
+# Rust 1.77.2 adalah versi terakhir yang masih mendukung Windows 7.
+# Jangan naikkan tanpa memastikan target Windows 7 tetap didukung.
+channel = "1.77.2"
+profile = "minimal"

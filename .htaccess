@@ -1,0 +1,20 @@
+# Cadangan keamanan bila document root tidak sengaja diarahkan ke folder
+# proyek. Document root yang benar adalah folder "dashboard".
+# File ini hanya berlaku di Apache; untuk IIS lihat web.config.
+
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^(agent|scripts|sql)(/|$) - [F,L]
+</IfModule>
+
+<FilesMatch "\.(ini|log|json|sql|md|toml|lock|rs|bak|old|swp)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>

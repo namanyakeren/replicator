@@ -1,0 +1,10 @@
+agent/target/
+dist/
+logs/
+*.log
+.git/
+.vscode/
+.idea/
+config/agent.ini
+config/dashboard.ini
+config.ini

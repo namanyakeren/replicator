@@ -1,0 +1,29 @@
+# Hasil build Rust
+agent/target/
+dist/
+*.exe
+*.pdb
+*.rlib
+*.rmeta
+
+# Runtime agent
+logs/
+*.log
+*.json.tmp
+
+# Konfigurasi lokal berisi kredensial (gunakan template di config/)
+config.ini
+config/agent.ini
+config/dashboard.ini
+dashboard/config.ini
+
+# Data runtime Podman / demo
+deploy/podman/.env
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store

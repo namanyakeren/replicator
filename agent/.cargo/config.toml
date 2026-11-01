@@ -1,0 +1,13 @@
+# Static CRT untuk target MSVC: agent bisa jalan tanpa VC++ Redistributable,
+# penting untuk Windows 7 yang belum tentu memiliki runtime terbaru.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Target GNU (MinGW) juga memakai CRT statis agar tidak butuh libgcc_s_*.dll.
+# Dipakai untuk build lokal tanpa Visual Studio C++ Build Tools.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
