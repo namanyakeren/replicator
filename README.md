@@ -26,7 +26,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - [Contoh alamat VPN](#contoh-alamat-vpn)
 - [Cara kerja sinkronisasi](#cara-kerja-sinkronisasi)
 - [Menjalankan agent](#menjalankan-agent)
-- [Build agent dari source](#build-agent-dari-source)
+- [Build agent dan installer dari source](#build-agent-dan-installer-dari-source)
 - [Deploy dashboard](#deploy-dashboard)
 - [Preview dashboard dengan Podman](#preview-dashboard-dengan-podman)
 - [Grant MySQL](#grant-mysql)
@@ -51,7 +51,12 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - Heartbeat ringan agar siklus panjang tidak terlihat mati.
 - Status, riwayat siklus, dan kejadian ditulis ke schema `_rep` (default) atau database status pusat.
 - Notifikasi eksternal lewat perintah/HTTP hook saat error atau pulih.
-- Berjalan sebagai Scheduled Task Windows, tahan putus koneksi MySQL, dan menulis log harian.
+- **Installer satu file** (`replicator-setup.exe`) yang membuat config, user MySQL, grant, database backup, dan schema status otomatis.
+- **Ikon tray** dengan menu Mulai, Hentikan, Monitor replikasi, Buka log, dan Keluar.
+- **Monitor replikasi langsung**: tabel yang sedang disalin, fase, dan jumlah baris.
+- Mendukung **port MySQL kustom** untuk master dan backup.
+- Autostart per-user tanpa hak Administrator; tetap bisa dipasang sebagai Scheduled Task.
+- Tahan putus koneksi MySQL dan menulis log harian.
 - Binary tunggal untuk Windows 7–11 tanpa runtime tambahan.
 
 ### Dashboard (PHP native)
@@ -128,8 +133,15 @@ replicator/
 │  │  ├─ main.rs                  # CLI, runner, notifikasi
 │  │  ├─ status.rs                # Tabel _rep, heartbeat, event
 │  │  ├─ sync.rs                  # Full load, incremental, verifikasi
+│  │  ├─ tray.rs                  # Ikon tray + monitor replikasi GDI
 │  │  └─ util.rs
 │  └─ Cargo.toml
+├─ installer/                     # Installer satu file (Rust + Win32)
+│  ├─ src/
+│  │  ├─ main.rs                  # Argumen GUI/silent
+│  │  ├─ install.rs               # User MySQL, grant, config, autostart
+│  │  └─ ui.rs                    # Form pemasangan
+│  └─ build.rs                    # Menyematkan replicator-agent.exe
 ├─ dashboard/                     # Document root PHP (tanpa config)
 │  ├─ index.php
 │  ├─ lib/
@@ -150,6 +162,7 @@ replicator/
 │  └─ DEPLOY-DASHBOARD.md         # Tutorial deploy dashboard
 ├─ scripts/
 │  ├─ build-agent.ps1
+│  ├─ build-installer.ps1         # Build agent + installer ke dist\
 │  ├─ install-task.ps1
 │  ├─ uninstall-task.ps1
 │  └─ serve-dashboard.ps1
@@ -169,9 +182,9 @@ replicator/
 
 - Windows 7, 8, 8.1, 10, atau 11 (32/64-bit sesuai binary yang dibangun).
 - MySQL 5.0+ di master dan backup. MySQL 8 juga dapat dipakai.
-- Akses jaringan ke master `:3306` dan backup `:3306`.
-- Binary `replicator-agent.exe` (lihat [Build agent](#build-agent-dari-source)).
-- Hak administratif hanya saat memasang Scheduled Task.
+- Akses jaringan ke port MySQL master dan backup (default `3306`, port kustom didukung).
+- Satu file `replicator-setup.exe` untuk pemasangan normal.
+- Tidak perlu Administrator; autostart ditulis per-user.
 
 ### Dashboard
 
@@ -190,60 +203,54 @@ replicator/
 
 ## Mulai cepat
 
-### 1. Siapkan database dan grant
+### 1. Pasang agent dengan installer (cara tercepat)
 
-Di master dan backup setiap site, jalankan grant yang sesuai. Ganti password dan batasi host seperlunya.
-
-```sql
--- Master: agent hanya membaca
-GRANT SELECT ON `appdb`.* TO 'repl_agent'@'%'
-    IDENTIFIED BY 'GANTI_PASSWORD_MASTER';
-
--- Backup: agent menulis data aplikasi dan schema status
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-    ON `appdb`.* TO 'repl_agent'@'%'
-    IDENTIFIED BY 'GANTI_PASSWORD_BACKUP';
-GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
-    ON `_rep%`.* TO 'repl_agent'@'%';
-
--- Dashboard: hanya membaca schema status
-GRANT SELECT ON `_rep%`.* TO 'repl_dashboard'@'%'
-    IDENTIFIED BY 'GANTI_PASSWORD_DASHBOARD_DB';
-```
-
-File lengkap ada di [`sql/master_user.sql`](sql/master_user.sql), [`sql/backup_user.sql`](sql/backup_user.sql), dan [`sql/dashboard_user.sql`](sql/dashboard_user.sql).
-
-### 2. Siapkan environment agent
+Build installer sekali dari root proyek:
 
 ```powershell
-Copy-Item config\agent.example.ini config\agent.ini
-notepad config\agent.ini
+.\scripts\build-installer.ps1
 ```
 
-Isi minimal:
+Hasilnya satu file: `dist\replicator-setup.exe`. Salin file itu ke komputer
+agent, lalu klik dua kali. Isi form:
 
-```ini
-[master]
-host = "192.168.1.11"
-user = "repl_agent"
-password = "GANTI_PASSWORD_MASTER"
-database = "appdb"
+| Isian | Contoh |
+|---|---|
+| IP master | `192.168.101.11` |
+| Port master | `3306` |
+| IP backup | `192.168.101.12` |
+| Port backup | `3306` |
+| Database aplikasi | `appdb` |
+| Nama site | `Jakarta` |
+| User admin MySQL | `root` |
+| Password admin | password admin server |
+| User agent | `repl_agent` |
 
-[backup]
-host = "192.168.1.12"
-user = "repl_agent"
-password = "GANTI_PASSWORD_BACKUP"
-database = "appdb"
-```
+Installer otomatis:
 
-Uji lalu jalankan siklus pertama:
+1. membuat user `repl_agent` di master dengan hak **SELECT, SHOW VIEW**;
+2. membuat user `repl_agent` di backup dengan hak baca-tulis dan DDL;
+3. membuat database aplikasi di backup dan schema status `_rep_<site>`;
+4. menulis `config\agent.ini`, `replicator-agent.exe`, launcher, dan uninstaller;
+5. mendaftarkan autostart per-user lalu menjalankan agent.
+
+Database aplikasi **harus sudah ada di master**; backup boleh dibuat installer.
+Setelah selesai, ikon **R** muncul di pojok kanan bawah taskbar.
+
+Pemasangan tanpa tampilan:
 
 ```powershell
-.\dist\replicator-agent.exe --check
-.\dist\replicator-agent.exe --once
+.\replicator-setup.exe --silent `
+  --master-host 192.168.101.11 --master-port 3307 `
+  --backup-host 192.168.101.12 --backup-port 3308 `
+  --site Jakarta `
+  --admin-password RahasiaAdmin `
+  --agent-password RahasiaAgent
 ```
 
-### 3. Siapkan environment dashboard
+Panduan lengkap: [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md).
+
+### 2. Siapkan environment dashboard
 
 ```powershell
 Copy-Item config\dashboard.example.ini config\dashboard.ini
@@ -266,7 +273,7 @@ sites_file = "sites.ini"
 Tidak ada section `[site:*]` di config. Dashboard mulai tanpa site; daftar site
 disimpan di `config\sites.ini` agar config utama tidak tertimpa.
 
-### 4. Jalankan dashboard dan tambahkan site
+### 3. Jalankan dashboard dan tambahkan site
 
 ```powershell
 .\scripts\serve-dashboard.ps1 -Port 8080
@@ -280,20 +287,94 @@ Buka `http://localhost:8080/`, masuk ke menu **Site**, lalu isi:
 | IP master | `192.168.101.11` |
 | IP slave / backup | `192.168.101.12` |
 
-Dashboard menentukan nama schema `_rep_jakarta` secara otomatis; tabel di dalamnya
-dibuat agent saat siklus pertama. Samakan nilai itu
-dengan `[status] schema` di `config\agent.ini` pada site tersebut. Untuk
-produksi, gunakan Apache/IIS dan HTTPS; lihat
+Dashboard menentukan nama schema `_rep_jakarta` secara otomatis. Installer
+memakai aturan yang sama; pastikan schema di config agent
+(`%LOCALAPPDATA%\Replicator\config\agent.ini`) sama dengan yang tampil di halaman
+Site. Untuk produksi, gunakan Apache/IIS dan HTTPS; lihat
 [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
 
-### 5. Pasang agent sebagai service
+### 4. Pantau agent dari ikon tray
+
+- Klik dua kali ikon **R** untuk membuka **Monitor Replikasi**.
+- Klik kanan untuk **Mulai agent**, **Hentikan agent**, **Monitor replikasi**,
+  **Buka folder log**, atau **Keluar**.
+- Monitor menampilkan tabel yang sedang disalin, fase, dan jumlah baris.
+
+Agent juga bisa diuji dari command line:
+
+```powershell
+cd $env:LOCALAPPDATA\Replicator
+.\replicator-agent.exe --config .\config\agent.ini --check
+.\replicator-agent.exe --config .\config\agent.ini --once
+```
+
+### 5. Pemasangan manual (opsional)
+
+Bila installer tidak boleh membuat user MySQL, buat grant manual di master dan
+backup. Ganti password dan batasi host seperlunya.
+
+```sql
+-- Master: agent hanya membaca
+GRANT SELECT ON `appdb`.* TO 'repl_agent'@'%'
+    IDENTIFIED BY 'GANTI_PASSWORD_MASTER';
+
+-- Backup: agent menulis data aplikasi dan schema status
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+    ON `appdb`.* TO 'repl_agent'@'%'
+    IDENTIFIED BY 'GANTI_PASSWORD_BACKUP';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+    ON `_rep%`.* TO 'repl_agent'@'%';
+
+-- Dashboard: hanya membaca schema status
+GRANT SELECT ON `_rep%`.* TO 'repl_dashboard'@'%'
+    IDENTIFIED BY 'GANTI_PASSWORD_DASHBOARD_DB';
+```
+
+File lengkap ada di [`sql/master_user.sql`](sql/master_user.sql), [`sql/backup_user.sql`](sql/backup_user.sql), dan [`sql/dashboard_user.sql`](sql/dashboard_user.sql).
+
+Salin template config lalu isi minimal:
+
+```powershell
+Copy-Item config\agent.example.ini config\agent.ini
+notepad config\agent.ini
+```
+
+```ini
+[master]
+host = "192.168.1.11"
+port = 3306
+user = "repl_agent"
+password = "GANTI_PASSWORD_MASTER"
+database = "appdb"
+
+[backup]
+host = "192.168.1.12"
+port = 3306
+user = "repl_agent"
+password = "GANTI_PASSWORD_BACKUP"
+database = "appdb"
+```
+
+Uji lalu jalankan mode tray:
+
+```powershell
+.\dist\replicator-agent.exe --check
+.\dist\replicator-agent.exe --once
+.\dist\replicator-agent.exe --tray
+```
+
+### 6. Jalankan otomatis (opsional)
+
+Installer sudah menambahkan autostart per-user. Untuk menjalankan agent sebagai
+Scheduled Task (misalnya harus hidup sebelum login):
 
 ```powershell
 # Jalankan PowerShell sebagai Administrator
 .\scripts\install-task.ps1 -ConfigPath "D:\replicator\config\agent.ini"
 ```
 
-Lihat `Get-Help .\scripts\install-task.ps1 -Full` untuk opsi lain.
+Lihat `Get-Help .\scripts\install-task.ps1 -Full` untuk opsi lain. Jangan
+mengaktifkan autostart tray dan Scheduled Task sekaligus untuk config yang sama.
 
 ---
 
@@ -303,7 +384,7 @@ Panduan langkah demi langkah (Bahasa Indonesia) untuk mesin produksi:
 
 | Dokumen | Isi |
 |---|---|
-| [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Prasyarat Windows, grant MySQL master/backup, struktur folder, isi `agent.ini`, uji `--check`/`--once`, Scheduled Task, verifikasi, update/rollback, troubleshooting. |
+| [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Installer satu file, port MySQL kustom, pembuatan user/grant otomatis, ikon tray + monitor, uji `--check`/`--once`, pemasangan manual, autostart/Scheduled Task, update/uninstall/rollback, troubleshooting. |
 | [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | PHP + `pdo_mysql`, mode status langsung/pusat, grant read-only, config `dashboard.ini`, IIS/Apache/nginx, izin tulis `sites.ini`, tambah site, keamanan, troubleshooting. |
 
 Ringkasnya: **agent dipasang di tiap site** (Windows 7–11) dan **dashboard cukup
@@ -317,7 +398,8 @@ Agent dan dashboard sekarang memakai file konfigurasi terpisah. Ini mencegah kre
 
 | Environment | Template | File aktif | Dibaca oleh |
 |---|---|---|---|
-| Agent | `config/agent.example.ini` | `config/agent.ini` | `replicator-agent.exe` |
+| Agent (installer) | dibuat installer | `%LOCALAPPDATA%\Replicator\config\agent.ini` | `replicator-agent.exe` |
+| Agent (manual) | `config/agent.example.ini` | `config/agent.ini` | `replicator-agent.exe` |
 | Dashboard | `config/dashboard.example.ini` | `config/dashboard.ini` | PHP dashboard |
 | Lama (single-site) | `config.example.ini` | `config.ini` | Keduanya (fallback) |
 
@@ -646,18 +728,24 @@ Agent akan melakukan full load pada siklus berikutnya.
 
 ```powershell
 # Cek config dan koneksi master, backup, serta status pusat
-.\dist\replicator-agent.exe --check --config .\config\agent.ini
+.\replicator-agent.exe --check --config .\config\agent.ini
 
 # Satu siklus lalu keluar
-.\dist\replicator-agent.exe --once --config .\config\agent.ini
+.\replicator-agent.exe --once --config .\config\agent.ini
 
-# Mode loop (foreground)
-.\dist\replicator-agent.exe --config .\config\agent.ini
+# Mode tray: ikon di pojok kanan bawah + monitor replikasi
+.\replicator-agent.exe --tray --config .\config\agent.ini
+
+# Mode loop (foreground, tanpa ikon tray)
+.\replicator-agent.exe --config .\config\agent.ini
 
 # Bantuan / versi
-.\dist\replicator-agent.exe --help
-.\dist\replicator-agent.exe --version
+.\replicator-agent.exe --help
+.\replicator-agent.exe --version
 ```
+
+Pada instalasi lewat installer, file berada di `%LOCALAPPDATA%\Replicator` dan
+launcher `Mulai Agent.vbs` menjalankan mode `--tray`.
 
 Tanpa `--config`, agent mencari `config\agent.ini` seperti dijelaskan pada [urutan pencarian config](#urutan-pencarian-config-agent).
 
@@ -700,19 +788,34 @@ Variabel lingkungan yang tersedia: `REP_LEVEL`, `REP_MESSAGE`, `REP_AGENT`, `REP
 .\scripts\uninstall-task.ps1
 ```
 
-Default task berjalan saat startup, restart otomatis bila gagal, dan menjalankan agent dalam mode loop.
+Default task berjalan saat startup, restart otomatis bila gagal, dan menjalankan agent dalam mode loop. Pada instalasi installer, autostart per-user sudah aktif secara default; pilih salah satu agar tidak ada dua agent untuk config yang sama.
+
+### Ikon tray
+
+Ikon **R** muncul di pojok kanan bawah taskbar saat agent berjalan dengan `--tray`. Klik dua kali untuk membuka **Monitor Replikasi**; klik kanan untuk Mulai, Hentikan, Monitor, Buka folder log, dan Keluar. Start/Stop hanya menjeda siklus, bukan mengubah config.
 
 ---
 
-## Build agent dari source
+## Build agent dan installer dari source
 
 Prasyarat:
 
 - Rustup dengan toolchain `1.77.2-x86_64-pc-windows-gnu`.
 - MinGW/WinLibs yang menyediakan `gcc.exe`.
 
+Build agent + installer sekaligus (disarankan):
+
 ```powershell
 rustup target add x86_64-pc-windows-gnu --toolchain 1.77.2-x86_64-pc-windows-gnu
+.\scripts\build-installer.ps1
+```
+
+Hasil di `dist\`: `replicator-agent.exe` dan `replicator-setup.exe`. Installer
+menyematkan agent, jadi build agent selalu dijalankan lebih dulu.
+
+Build agent saja:
+
+```powershell
 .\scripts\build-agent.ps1
 ```
 
@@ -724,10 +827,18 @@ cargo +1.77.2-x86_64-pc-windows-gnu build --release --locked --manifest-path .\a
 Copy-Item .\agent\target\release\replicator-agent.exe .\dist\
 ```
 
+Build installer membutuhkan `replicator-agent.exe` di `dist\` atau
+`agent\target\release\`:
+
+```powershell
+cargo +1.77.2-x86_64-pc-windows-gnu build --release --manifest-path .\installer\Cargo.toml
+Copy-Item .\installer\target\release\replicator-setup.exe .\dist\
+```
+
 Build MSVC:
 
 ```powershell
-.\scripts\build-agent.ps1 -Toolchain 1.77.2-x86_64-pc-windows-msvc
+.\scripts\build-installer.ps1 -Toolchain 1.77.2-x86_64-pc-windows-msvc
 ```
 
 ---
@@ -860,6 +971,10 @@ podman run -d --name rep-demo-dashboard --network rep-demo-net -p 8089:80 replic
 
 ## Grant MySQL
 
+Pada pemasangan normal, installer membuat user, grant, database backup, dan
+schema status otomatis. Bagian ini dipakai untuk pemasangan manual atau bila
+ingin membuat grant sendiri.
+
 ### MySQL 5.0–5.7
 
 Gunakan sintaks `GRANT ... IDENTIFIED BY` seperti pada file `sql/*.sql`.
@@ -912,7 +1027,30 @@ $env:REPLICATOR_DASHBOARD_CONFIG = (Resolve-Path .\config\dashboard.ini)
 
 ### `config agent ... tidak bisa membaca`
 
-Periksa path `--config`, atau buat `config\agent.ini` dari template. Pastikan file tidak terkunci/ACL.
+Periksa path `--config`, atau buat `config\agent.ini` dari template. Pada
+instalasi installer, file ada di
+`%LOCALAPPDATA%\Replicator\config\agent.ini`. Pastikan file tidak terkunci/ACL.
+
+### Installer gagal atau berhenti tanpa pesan
+
+- Lihat `%LOCALAPPDATA%\Replicator\install.log`.
+- Bila folder instalasi belum terbentuk, lihat
+  `%TEMP%\replicator-setup-error.log`.
+- Pastikan database aplikasi sudah ada di master.
+- Pastikan akun admin MySQL boleh membuat user dan grant.
+- Uji port dengan `Test-NetConnection <ip> -Port <port>`.
+
+### Ikon tray tidak muncul
+
+1. Jalankan `Mulai Agent.vbs` dari folder instalasi.
+2. Periksa `logs\agent.log`; cari baris `mode tray aktif`.
+3. Bila agent sudah berjalan untuk config yang sama, instance kedua akan keluar
+   dan membuka monitor milik agent yang lama.
+
+### Start/Stop tray tidak langsung berefek
+
+Stop berlaku setelah siklus yang sedang berjalan selesai, supaya data tidak
+setengah tertulis. Tunggu satu siklus atau lihat progres di monitor.
 
 ### `SQLSTATE[HY000] [1045] Access denied`
 
@@ -985,10 +1123,13 @@ Pastikan user status punya hak membuat schema `_rep_<site>` dan tabel di databas
 - [ ] `basic_auth = "true"` dan HTTPS aktif.
 - [ ] Document root menunjuk ke `dashboard/`.
 - [ ] `config/dashboard.ini` berada di luar document root.
+- [ ] Installer dijalankan dan `install.log` tidak berisi `GAGAL`.
+- [ ] Port MySQL master dan backup benar (default `3306`, boleh kustom).
 - [ ] Grant dashboard hanya SELECT pada `_rep%`.
 - [ ] Grant agent dibatasi ke host/IP yang benar.
 - [ ] `status_schema` unik untuk setiap site (mode pusat).
-- [ ] Agent berjalan sebagai Scheduled Task dan restart otomatis.
+- [ ] Ikon tray muncul dan monitor replikasi menampilkan progres.
+- [ ] Agent berjalan otomatis (autostart per-user atau Scheduled Task), tidak keduanya.
 - [ ] NTP aktif di master, backup, dan server status.
 - [ ] Notifikasi eksternal diuji.
 - [ ] Dashboard diuji dari jaringan VPN yang sama dengan operator.

@@ -1,5 +1,6 @@
 # Hasil build Rust
 agent/target/
+installer/target/
 dist/
 *.exe
 *.pdb

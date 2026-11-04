@@ -5,12 +5,15 @@ mod status;
 mod sync;
 mod util;
 
+#[cfg(windows)]
+mod tray;
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,6 +41,7 @@ struct Args {
     config: Option<PathBuf>,
     check: bool,
     once: bool,
+    tray: bool,
 }
 
 fn run() -> Result<i32, String> {
@@ -57,6 +61,17 @@ fn run() -> Result<i32, String> {
         None => default_config_path(),
     };
 
+    // Cek instance ganda sebelum config/logger dimuat agar instance kedua tidak
+    // menulis baris log "mulai" yang menyesatkan.
+    #[cfg(windows)]
+    if args.tray {
+        tray::hide_console();
+        if !tray::acquire_single_instance(&config_path) {
+            tray::activate_existing(&config_path);
+            return Ok(0);
+        }
+    }
+
     let config = Config::load(&config_path)?;
     let logger = Arc::new(Logger::new(&config.log)?);
     logger.info(&format!(
@@ -73,18 +88,105 @@ fn run() -> Result<i32, String> {
     let running = Arc::new(AtomicBool::new(true));
     install_signal_handler(running.clone(), logger.clone());
 
-    let mut runner = Runner::new(config, logger.clone());
-
     if args.once {
+        let mut runner = Runner::new(config, logger.clone());
         runner.start();
         runner.run_once();
         runner.finish();
         return Ok(0);
     }
 
-    runner.run_loop(running);
+    if args.tray {
+        #[cfg(windows)]
+        {
+            return run_tray_mode(config, logger);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("--tray hanya tersedia di Windows".to_string());
+        }
+    }
+
+    let paused = Arc::new(AtomicBool::new(false));
+    let mut runner = Runner::new(config, logger.clone());
+    runner.run_loop(running, paused);
     runner.finish();
     Ok(0)
+}
+
+/// Snapshot status yang dipakai ikon tray dan jendela monitor. Diperbarui
+/// thread sinkronisasi setiap tabel/batch.
+#[derive(Clone)]
+pub struct UiState {
+    pub site: String,
+    pub state: String,
+    pub phase: String,
+    pub current_table: String,
+    pub table_index: usize,
+    pub table_total: usize,
+    pub tables_ok: usize,
+    pub tables_error: usize,
+    pub rows_read: u64,
+    pub rows_written: u64,
+    pub cycle_no: u64,
+    pub message: String,
+    pub updated: Option<Instant>,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        UiState {
+            site: String::new(),
+            state: "idle".to_string(),
+            phase: String::new(),
+            current_table: String::new(),
+            table_index: 0,
+            table_total: 0,
+            tables_ok: 0,
+            tables_error: 0,
+            rows_read: 0,
+            rows_written: 0,
+            cycle_no: 0,
+            message: String::new(),
+            updated: None,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn run_tray_mode(config: Config, logger: Arc<Logger>) -> Result<i32, String> {
+    let log_dir = config.log.dir.clone();
+    let config_path = config.path.clone();
+    let running = Arc::new(AtomicBool::new(true));
+    let paused = Arc::new(AtomicBool::new(false));
+    let ui = Arc::new(Mutex::new(UiState {
+        site: config.agent_id.clone(),
+        ..Default::default()
+    }));
+
+    logger.info("mode tray aktif: ikon ada di pojok kanan bawah taskbar");
+
+    let mut runner = Runner::new(config, logger.clone()).with_ui(ui.clone());
+    let engine_running = running.clone();
+    let engine_paused = paused.clone();
+    let engine = thread::spawn(move || {
+        runner.run_loop(engine_running, engine_paused);
+        runner.finish();
+    });
+
+    let result = tray::run(
+        ui,
+        paused,
+        running.clone(),
+        log_dir,
+        logger.clone(),
+        config_path,
+    );
+
+    running.store(false, Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(400));
+    drop(engine);
+    result.map(|_| 0)
 }
 
 fn parse_args() -> Result<Option<Args>, String> {
@@ -92,6 +194,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         config: None,
         check: false,
         once: false,
+        tray: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -106,6 +209,7 @@ fn parse_args() -> Result<Option<Args>, String> {
             }
             "--check" => parsed.check = true,
             "--once" => parsed.once = true,
+            "--tray" => parsed.tray = true,
             "--config" => {
                 let value = args
                     .next()
@@ -129,6 +233,9 @@ fn parse_args() -> Result<Option<Args>, String> {
     if parsed.check && parsed.once {
         return Err("--check dan --once tidak bisa dipakai bersamaan".to_string());
     }
+    if parsed.tray && (parsed.check || parsed.once) {
+        return Err("--tray tidak bisa digabung dengan --check atau --once".to_string());
+    }
     Ok(Some(parsed))
 }
 
@@ -137,12 +244,13 @@ fn print_usage() {
         "replicator-agent {}\n\
          \n\
          Pemakaian:\n\
-           replicator-agent [--config <file>] [--once] [--check]\n\
+           replicator-agent [--config <file>] [--once] [--check] [--tray]\n\
          \n\
          Opsi:\n\
            --config <file>  Path ke config agent (default: config\\agent.ini)\n\
            --once           Jalankan satu siklus lalu keluar\n\
            --check          Uji config + koneksi master/backup, lalu keluar\n\
+           --tray           Tampilkan ikon dan monitor di system tray (Windows)\n\
            -h, --help       Tampilkan bantuan\n\
            -V, --version    Tampilkan versi\n",
         VERSION
@@ -348,6 +456,7 @@ struct Runner {
     last_notify: Option<Instant>,
     last_prune: Option<Instant>,
     last_state: String,
+    ui: Option<Arc<Mutex<UiState>>>,
 }
 
 impl Runner {
@@ -364,22 +473,46 @@ impl Runner {
             last_notify: None,
             last_prune: None,
             last_state: "starting".to_string(),
+            ui: None,
         }
     }
 
-    fn run_loop(&mut self, running: Arc<AtomicBool>) {
+    fn with_ui(mut self, ui: Arc<Mutex<UiState>>) -> Runner {
+        self.ui = Some(ui);
+        self
+    }
+
+    fn run_loop(&mut self, running: Arc<AtomicBool>, paused: Arc<AtomicBool>) {
         self.start();
 
         while running.load(Ordering::SeqCst) {
+            if paused.load(Ordering::SeqCst) {
+                self.publish_paused();
+                self.sleep_interruptible(
+                    Duration::from_millis(500),
+                    &running,
+                    Some(&paused),
+                );
+                continue;
+            }
+
             self.run_once();
             if !running.load(Ordering::SeqCst) {
                 break;
+            }
+
+            if paused.load(Ordering::SeqCst) {
+                continue;
             }
             self.logger.debug(&format!(
                 "menunggu {} detik sebelum siklus berikutnya",
                 self.config.sync.interval_sec
             ));
-            self.sleep_interruptible(Duration::from_secs(self.config.sync.interval_sec), &running);
+            self.sleep_interruptible(
+                Duration::from_secs(self.config.sync.interval_sec),
+                &running,
+                Some(&paused),
+            );
         }
     }
 
@@ -395,9 +528,25 @@ impl Runner {
             ),
         );
         self.prune();
+        self.publish(
+            "idle",
+            "",
+            "",
+            0,
+            0,
+            "Agent siap, menunggu siklus pertama",
+        );
     }
 
     fn finish(&mut self) {
+        self.publish(
+            "stopped",
+            "",
+            "",
+            0,
+            0,
+            "Agent berhenti",
+        );
         self.status.mark_stopped();
         self.status.event("warn", "agent_stopped", "Agent dihentikan");
         self.logger.info("agent berhenti");
@@ -407,12 +556,33 @@ impl Runner {
         self.cycle_no = self.cycle_no.saturating_add(1);
         let cycle_no = self.cycle_no;
         self.logger.info(&format!("siklus #{} dimulai", cycle_no));
+        self.publish(
+            "syncing",
+            "prepare",
+            "",
+            0,
+            0,
+            &format!("Siklus #{} dimulai", cycle_no),
+        );
 
         self.status.cycle_started(cycle_no);
         let cycle_row = self.status.cycle_row_start(cycle_no);
 
         let started = Instant::now();
-        let result = sync::run_cycle(&self.config, &self.logger, &mut self.status, cycle_no);
+        let progress = self.ui.as_ref().map(|ui| {
+            let ui = ui.clone();
+            move |event: sync::ProgressEvent| publish_progress_event(&ui, event)
+        });
+        let progress_ref = progress
+            .as_ref()
+            .map(|callback| callback as &dyn Fn(sync::ProgressEvent));
+        let result = sync::run_cycle(
+            &self.config,
+            &self.logger,
+            &mut self.status,
+            cycle_no,
+            progress_ref,
+        );
         let duration_ms = started.elapsed().as_millis() as u64;
         let next_run_sec = self.config.sync.interval_sec;
 
@@ -554,6 +724,7 @@ impl Runner {
         duration_ms: u64,
     ) {
         self.last_state = state.to_string();
+        self.publish_outcome(state, outcome, message);
         self.write_status_file(state, message, outcome, error, duration_ms);
 
         if problem {
@@ -639,15 +810,85 @@ impl Runner {
         );
     }
 
-    fn sleep_interruptible(&self, total: Duration, running: &AtomicBool) {
+    fn sleep_interruptible(
+        &self,
+        total: Duration,
+        running: &AtomicBool,
+        paused: Option<&AtomicBool>,
+    ) {
         let step = Duration::from_millis(250);
         let mut slept = Duration::ZERO;
         while slept < total && running.load(Ordering::SeqCst) {
+            if paused
+                .map(|paused| paused.load(Ordering::SeqCst))
+                .unwrap_or(false)
+            {
+                break;
+            }
             let remaining = total.saturating_sub(slept);
             let chunk = remaining.min(step);
             thread::sleep(chunk);
             slept += chunk;
         }
+    }
+
+    fn publish(
+        &self,
+        state: &str,
+        phase: &str,
+        table: &str,
+        table_index: usize,
+        table_total: usize,
+        message: &str,
+    ) {
+        let Some(ui) = &self.ui else {
+            return;
+        };
+        let mut ui = ui.lock().unwrap_or_else(|poison| poison.into_inner());
+        ui.state = state.to_string();
+        ui.phase = phase.to_string();
+        ui.current_table = table.to_string();
+        ui.table_index = table_index;
+        ui.table_total = table_total;
+        ui.cycle_no = self.cycle_no;
+        ui.message = message.to_string();
+        ui.updated = Some(Instant::now());
+    }
+
+    fn publish_paused(&self) {
+        let Some(ui) = &self.ui else {
+            return;
+        };
+        let mut ui = ui.lock().unwrap_or_else(|poison| poison.into_inner());
+        if ui.state != "paused" {
+            ui.state = "paused".to_string();
+            ui.phase = String::new();
+            ui.message =
+                "Agent dihentikan. Siklus yang sedang berjalan diselesaikan dulu.".to_string();
+            ui.cycle_no = self.cycle_no;
+            ui.updated = Some(Instant::now());
+        }
+    }
+
+    fn publish_outcome(&self, state: &str, outcome: Option<&CycleOutcome>, message: &str) {
+        let Some(ui) = &self.ui else {
+            return;
+        };
+        let mut ui = ui.lock().unwrap_or_else(|poison| poison.into_inner());
+        ui.state = state.to_string();
+        ui.phase = "done".to_string();
+        ui.current_table.clear();
+        ui.table_index = 0;
+        if let Some(outcome) = outcome {
+            ui.table_total = outcome.tables_total;
+            ui.tables_ok = outcome.tables_ok;
+            ui.tables_error = outcome.tables_error;
+            ui.rows_read = outcome.rows_read;
+            ui.rows_written = outcome.rows_written;
+        }
+        ui.cycle_no = self.cycle_no;
+        ui.message = message.to_string();
+        ui.updated = Some(Instant::now());
     }
 
     fn write_status_file(
@@ -719,6 +960,41 @@ impl Runner {
                     .debug(&format!("gagal menulis status file: {}", error));
             }
         }
+    }
+}
+
+fn publish_progress_event(ui: &Arc<Mutex<UiState>>, event: sync::ProgressEvent) {
+    let mut ui = ui.lock().unwrap_or_else(|poison| poison.into_inner());
+    ui.state = "syncing".to_string();
+    ui.phase = event.phase.clone();
+    ui.current_table = event.table.clone();
+    ui.table_index = event.table_index;
+    ui.table_total = event.table_total;
+    ui.tables_ok = event.tables_ok;
+    ui.tables_error = event.tables_error;
+    ui.rows_read = event.rows_read;
+    ui.rows_written = event.rows_written;
+    ui.message = if event.table.is_empty() {
+        format!("Menyiapkan {} tabel", event.table_total)
+    } else {
+        format!(
+            "{}: {} (tabel {} dari {})",
+            phase_text(&event.phase),
+            event.table,
+            event.table_index,
+            event.table_total
+        )
+    };
+    ui.updated = Some(Instant::now());
+}
+
+fn phase_text(phase: &str) -> &'static str {
+    match phase {
+        "full" => "Full load",
+        "incremental" => "Incremental",
+        "verify" => "Verifikasi",
+        "prepare" => "Menyiapkan",
+        _ => "Memproses",
     }
 }
 

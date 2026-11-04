@@ -1,0 +1,30 @@
+[package]
+name = "replicator-setup"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Installer satu file untuk Replicator Agent di Windows"
+license = "MIT"
+
+[dependencies]
+mysql = { version = "=24.0.0", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+chrono = { version = "=0.4.39", default-features = false, features = ["clock", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -18,6 +18,21 @@ pub struct CycleStats {
     pub rows_written: u64,
 }
 
+/// Kejadian progres yang dikirim ke tray/monitor.
+#[derive(Clone, Debug)]
+pub struct ProgressEvent {
+    pub phase: String,
+    pub table: String,
+    pub table_index: usize,
+    pub table_total: usize,
+    pub tables_ok: usize,
+    pub tables_error: usize,
+    pub rows_read: u64,
+    pub rows_written: u64,
+}
+
+pub type ProgressCallback<'a> = &'a dyn Fn(ProgressEvent);
+
 #[derive(Debug)]
 pub struct CycleOutcome {
     pub tables_total: usize,
@@ -36,6 +51,7 @@ pub fn run_cycle(
     logger: &Logger,
     status: &mut StatusDb,
     _cycle_no: u64,
+    progress: Option<ProgressCallback>,
 ) -> Result<CycleOutcome, String> {
     let started = Instant::now();
 
@@ -72,7 +88,21 @@ pub fn run_cycle(
         ..Default::default()
     };
 
-    for table in &selected {
+    if let Some(callback) = progress {
+        callback(ProgressEvent {
+            phase: "prepare".to_string(),
+            table: String::new(),
+            table_index: 0,
+            table_total: selected.len(),
+            tables_ok: 0,
+            tables_error: 0,
+            rows_read: 0,
+            rows_written: 0,
+        });
+    }
+
+    for (index, table) in selected.iter().enumerate() {
+        let table_index = index + 1;
         logger.debug(&format!("memproses tabel {}", table));
         match sync_table(
             cfg,
@@ -83,6 +113,9 @@ pub fn run_cycle(
             table,
             &updated_from,
             &mut stats,
+            progress,
+            table_index,
+            selected.len(),
         ) {
             Ok(()) => {
                 stats.tables_ok += 1;
@@ -130,6 +163,30 @@ pub fn run_cycle(
     })
 }
 
+struct ProgressCtx<'a> {
+    callback: Option<ProgressCallback<'a>>,
+    table: String,
+    table_index: usize,
+    table_total: usize,
+}
+
+impl ProgressCtx<'_> {
+    fn emit(&self, stats: &CycleStats, phase: &str) {
+        if let Some(callback) = self.callback {
+            callback(ProgressEvent {
+                phase: phase.to_string(),
+                table: self.table.clone(),
+                table_index: self.table_index,
+                table_total: self.table_total,
+                tables_ok: stats.tables_ok,
+                tables_error: stats.tables_error,
+                rows_read: stats.rows_read,
+                rows_written: stats.rows_written,
+            });
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_table(
     cfg: &Config,
@@ -140,7 +197,17 @@ fn sync_table(
     table: &str,
     updated_from: &str,
     stats: &mut CycleStats,
+    progress: Option<ProgressCallback>,
+    table_index: usize,
+    table_total: usize,
 ) -> Result<(), String> {
+    let ctx = ProgressCtx {
+        callback: progress,
+        table: table.to_string(),
+        table_index,
+        table_total,
+    };
+    ctx.emit(stats, "prepare");
     let master_columns = db::columns(master, &cfg.master.database, table)?;
     if master_columns.is_empty() {
         return Err("tidak ada kolom yang terbaca".to_string());
@@ -310,6 +377,7 @@ fn sync_table(
             &insert_columns,
             key.as_deref(),
             stats,
+            &ctx,
         )?;
         logger.info(&format!("tabel {}: full load {} baris", table, rows));
         return Ok(());
@@ -353,6 +421,7 @@ fn sync_table(
                     &insert_columns,
                     Some(key_name),
                     stats,
+                    &ctx,
                 )?;
                 logger.info(&format!("tabel {}: full load {} baris (tujuan kosong)", table, rows));
                 return Ok(());
@@ -375,6 +444,7 @@ fn sync_table(
                 key_name,
                 updated_from,
                 stats,
+                &ctx,
             )?;
             table_rows += rows;
         }
@@ -391,6 +461,7 @@ fn sync_table(
             key_index,
             watermark,
             stats,
+            &ctx,
         )?;
 
         let mut rows_master = None;
@@ -440,6 +511,7 @@ fn sync_table(
                 &insert_columns,
                 Some(key_name),
                 stats,
+                &ctx,
             )?;
         }
         return Ok(());
@@ -457,6 +529,7 @@ fn sync_table(
             &insert_columns,
             None,
             stats,
+            &ctx,
         )?;
         return Ok(());
     }
@@ -480,10 +553,12 @@ fn full_load(
     columns: &[Column],
     key: Option<&str>,
     stats: &mut CycleStats,
+    ctx: &ProgressCtx,
 ) -> Result<u64, String> {
     status.table_begin(table, "full", key);
     status.set_force_full(table, true);
     status.table_progress(table, 0);
+    ctx.emit(stats, "full");
 
     let truncate = cfg.sync.truncate_before_full || key.is_none();
     if truncate {
@@ -503,9 +578,10 @@ fn full_load(
     let mut total = 0u64;
 
     let mut flush = |conn: &mut Conn,
-                 batch: &mut Vec<Vec<Value>>,
-                 bytes: &mut usize,
-                 total: &mut u64|
+                     batch: &mut Vec<Vec<Value>>,
+                     bytes: &mut usize,
+                     total: &mut u64,
+                     stats: &mut CycleStats|
      -> Result<(), String> {
         if batch.is_empty() {
             return Ok(());
@@ -515,6 +591,7 @@ fn full_load(
         stats.rows_written += rows;
         status.table_progress(table, *total);
         status.touch();
+        ctx.emit(stats, "full");
         batch.clear();
         *bytes = 0;
         Ok(())
@@ -528,11 +605,11 @@ fn full_load(
         stats.rows_read += 1;
 
         if batch.len() >= row_limit || batch_bytes >= 8 * 1024 * 1024 {
-            flush(backup, &mut batch, &mut batch_bytes, &mut total)?;
+            flush(backup, &mut batch, &mut batch_bytes, &mut total, stats)?;
         }
     }
     drop(result);
-    flush(backup, &mut batch, &mut batch_bytes, &mut total)?;
+    flush(backup, &mut batch, &mut batch_bytes, &mut total, stats)?;
 
     let rows_master = db::count_rows(master, table).unwrap_or(total);
     let rows_backup = db::count_rows(backup, table).unwrap_or(total);
@@ -564,9 +641,11 @@ fn incremental_key(
     key_index: usize,
     mut watermark: Value,
     stats: &mut CycleStats,
+    ctx: &ProgressCtx,
 ) -> Result<u64, String> {
     let limit = batch_rows(cfg.sync.incremental_batch_rows, columns.len());
     let mut total = 0u64;
+    ctx.emit(stats, "incremental");
 
     loop {
         let rows = db::select_page_after(master, table, columns, key_name, &watermark, limit)?;
@@ -587,6 +666,7 @@ fn incremental_key(
         total += written;
         stats.rows_written += written;
         status.touch();
+        ctx.emit(stats, "incremental");
 
         if let Some(value) = last_key {
             watermark = value;
@@ -612,7 +692,9 @@ fn incremental_updated(
     _key_name: &str,
     updated_from: &str,
     stats: &mut CycleStats,
+    ctx: &ProgressCtx,
 ) -> Result<u64, String> {
+    ctx.emit(stats, "incremental");
     let sql = format!(
         "SELECT {} FROM {} WHERE {} >= ?",
         db::select_exprs(columns),
@@ -642,6 +724,7 @@ fn incremental_updated(
             batch.clear();
             batch_bytes = 0;
             status.touch();
+            ctx.emit(stats, "incremental");
         }
     }
     drop(result);
@@ -650,6 +733,7 @@ fn incremental_updated(
         let written = write_rows(backup, table, columns, &batch, true)?;
         total += written;
         stats.rows_written += written;
+        ctx.emit(stats, "incremental");
     }
 
     Ok(total)
@@ -666,7 +750,9 @@ fn verify_table(
     columns: &[Column],
     key: Option<&str>,
     stats: &mut CycleStats,
+    ctx: &ProgressCtx,
 ) -> Result<(), String> {
+    ctx.emit(stats, "verify");
     if cfg.verify.max_rows > 0 {
         let approx = db::approx_rows(master, &cfg.master.database, table)?;
         if approx > cfg.verify.max_rows {
@@ -712,6 +798,7 @@ fn verify_table(
         columns,
         key,
         stats,
+        ctx,
     )?;
     Ok(())
 }

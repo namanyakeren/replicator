@@ -836,6 +836,7 @@ dependencies = [
  "ctrlc",
  "flate2",
  "mysql",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
