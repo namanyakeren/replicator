@@ -8,7 +8,7 @@ services:
     image: replicator-dashboard:local
     restart: unless-stopped
     ports:
-      # Default hanya localhost; gunakan VPN/reverse proxy HTTPS untuk akses site.
+      # Atur DASHBOARD_PORT dan DASHBOARD_BIND di deploy/docker/.env.
       - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8080}:80"
     volumes:
       # Folder lokal menyimpan dashboard.ini (rahasia) dan sites.ini (ditulis PHP).

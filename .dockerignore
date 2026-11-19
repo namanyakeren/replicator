@@ -11,4 +11,5 @@ config/
 config.ini
 dashboard/config.ini
 deploy/docker/config/
+deploy/docker/.env
 deploy/podman/.env

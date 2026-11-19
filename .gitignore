@@ -25,6 +25,7 @@ dashboard/config.ini
 # Data runtime Podman / demo
 deploy/podman/.env
 deploy/docker/config/
+deploy/docker/.env
 
 # Editor / OS
 .vscode/

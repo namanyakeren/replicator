@@ -18,7 +18,9 @@ Di PowerShell:
 ```powershell
 New-Item -ItemType Directory -Force .\deploy\docker\config | Out-Null
 Copy-Item .\config\dashboard.example.ini .\deploy\docker\config\dashboard.ini
+Copy-Item .\deploy\docker\.env.example .\deploy\docker\.env
 notepad .\deploy\docker\config\dashboard.ini
+notepad .\deploy\docker\.env
 ```
 
 Di Linux/macOS:
@@ -26,7 +28,9 @@ Di Linux/macOS:
 ```sh
 mkdir -p deploy/docker/config
 cp config/dashboard.example.ini deploy/docker/config/dashboard.ini
+cp deploy/docker/.env.example deploy/docker/.env
 ${EDITOR:-vi} deploy/docker/config/dashboard.ini
+${EDITOR:-vi} deploy/docker/.env
 ```
 
 Ubah paling sedikit `[dashboard] password` dan `db_password` dari nilai
@@ -55,30 +59,35 @@ atau komputer MySQL. Untuk MySQL di host, gunakan alamat LAN host yang bisa
 diakses container dan batasi grant/firewall dengan benar. Port kustom dapat
 diisi di `db_port` (mode pusat) atau saat menambah site (mode langsung).
 
-## 2. Jalankan
+## 2. Pilih port dan jalankan
+
+Edit `deploy/docker/.env` untuk mengganti **port pada mesin Docker**. Misalnya:
+
+```dotenv
+DASHBOARD_PORT=8090
+DASHBOARD_BIND=127.0.0.1
+```
+
+Port container tetap `80`; contoh di atas membuka dashboard di
+<http://localhost:8090/>. Untuk port lain, cukup ubah `DASHBOARD_PORT`, lalu
+jalankan ulang perintah `up -d` di bawah. Pastikan port host belum dipakai
+aplikasi lain. File `.env` tidak di-commit; tidak menyimpan password dashboard.
 
 ```sh
-docker compose -f deploy/docker/compose.yaml up -d --build
-docker compose -f deploy/docker/compose.yaml ps
-docker compose -f deploy/docker/compose.yaml exec dashboard php -m
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml up -d --build
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml ps
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml exec dashboard php -m
 ```
 
-Pastikan `pdo_mysql` muncul pada daftar modul. Buka
-<http://localhost:8080/> dan login menggunakan `username`/`password` pada
-`dashboard.ini`. Secara default port **hanya** dibuka pada `127.0.0.1` host.
-Untuk akses dari site melalui VPN, atur `DASHBOARD_BIND` ke IP VPN host dan
-gunakan reverse proxy HTTPS, misalnya pada PowerShell:
-
-```powershell
-$env:DASHBOARD_BIND = "10.10.10.20"
-$env:DASHBOARD_PORT = "8080"
-docker compose -f deploy/docker/compose.yaml up -d
-```
-
-Di Linux/macOS gunakan `DASHBOARD_BIND=10.10.10.20 DASHBOARD_PORT=8080 docker compose -f deploy/docker/compose.yaml up -d`.
-Jangan mempublikasikan port ini langsung ke internet; Basic Auth **tidak**
-mengenkripsi koneksi tanpa HTTPS. Bind yang diubah lewat variabel shell perlu
-diatur lagi saat menjalankan perintah Compose berikutnya.
+Pastikan `pdo_mysql` muncul pada daftar modul. Login memakai
+`username`/`password` pada `dashboard.ini`. Secara default port **hanya**
+dibuka pada `127.0.0.1` host. Untuk akses site melalui VPN, set
+`DASHBOARD_BIND` di `.env` ke IP VPN mesin Docker (contoh `10.10.10.20`) dan
+gunakan reverse proxy HTTPS. Akses dari mesin lain kemudian melalui
+`http://10.10.10.20:8090/` sesuai port yang dipilih. Jangan publikasikan
+langsung ke internet; Basic Auth **tidak** mengenkripsi koneksi tanpa HTTPS.
+`--env-file` sengaja dicantumkan agar file `.env` di subfolder ditemukan
+walaupun perintah dijalankan dari root repo.
 
 ## 3. Tambah site dan verifikasi
 
@@ -115,8 +124,8 @@ Sebelum update, simpan salinan **kedua file** bila ada:
 Setelah mengambil source versi baru:
 
 ```sh
-docker compose -f deploy/docker/compose.yaml up -d --build
-docker compose -f deploy/docker/compose.yaml logs --tail=100 dashboard
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml up -d --build
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml logs --tail=100 dashboard
 ```
 
 Jika perlu rollback, kembalikan source/revisi image sebelumnya lalu jalankan
@@ -124,7 +133,7 @@ ulang Compose. Jangan hapus folder `deploy/docker/config/` agar daftar site
 tidak hilang. Untuk menghentikan container tanpa menghapus config:
 
 ```sh
-docker compose -f deploy/docker/compose.yaml down
+docker compose --env-file deploy/docker/.env -f deploy/docker/compose.yaml down
 ```
 
 Deployment produksi non-Docker, rincian grant, dan troubleshooting lanjutan:

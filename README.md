@@ -23,6 +23,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - [Dashboard multi-site](#dashboard-multi-site)
 - [Kelola site dari dashboard](#kelola-site-dari-dashboard)
 - [Mode status: langsung atau pusat](#mode-status-langsung-atau-pusat)
+- [Cara dashboard membaca status setiap site](#cara-dashboard-membaca-status-setiap-site)
 - [Contoh alamat VPN](#contoh-alamat-vpn)
 - [Cara kerja sinkronisasi](#cara-kerja-sinkronisasi)
 - [Mode darurat (failback)](#mode-darurat-failback)
@@ -124,6 +125,31 @@ Data aplikasi tetap disalin ke backup masing-masing site. Hanya status/heartbeat
 ```
 
 Mode pusat lebih nyaman untuk banyak site karena dashboard hanya membuka satu koneksi database. Syaratnya, setiap agent memakai `status.schema` yang unik.
+
+### Cara dashboard membaca status setiap site
+
+Agent di tiap site menulis **heartbeat dan hasil replikasi** ke schema status
+MySQL (`_rep_<site>`), bukan mengirim data ke dashboard melalui HTTP. Saat
+halaman dashboard diminta atau di-*refresh*, PHP membaca daftar site dari
+`dashboard.ini` dan `sites.ini` (di Docker: `deploy/docker/config/`), lalu menggunakan **PDO MySQL dengan
+akun read-only (`SELECT`)** untuk membaca tabel `agent`, `table_status`,
+`event`, dan `cycle` pada schema status masing-masing site. Dashboard **tidak
+membaca tabel transaksi aplikasi** dan tidak memerlukan koneksi ke MySQL master.
+
+- **Mode langsung:** dashboard menghubungi MySQL backup tiap site melalui
+  `backup_host` dan port statusnya. Mesin/container dashboard harus bisa
+  menjangkau backup tiap site melalui LAN/VPN.
+- **Mode pusat:** tiap agent menulis status ke schema unik pada satu MySQL
+  pusat; dashboard membaca schema tersebut melalui `[dashboard] db_host` dan
+  `db_port`. Koneksi ke host yang sama dipakai ulang dalam satu request PHP.
+
+Status online/offline dihitung dari `heartbeat_at`: jika lebih lama dari
+`stale_after_sec` (default 120 detik), site dianggap tidak aktif. Halaman
+memuat ulang sesuai `refresh_sec` (default 15 detik); ini **polling**, bukan
+WebSocket atau push real-time. Bila suatu database status tidak terjangkau,
+site tersebut ditampilkan sebagai tidak terhubung tanpa menghentikan tampilan
+site lain. Lihat juga [konfigurasi mode status](#mode-status-langsung-atau-pusat)
+dan [panduan Docker](docs/DEPLOY-DASHBOARD-DOCKER.md).
 
 ---
 
@@ -941,6 +967,9 @@ Build MSVC:
 
 Panduan lengkap: [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
 Untuk Docker Compose tanpa database demo: [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md).
+Salin `deploy/docker/.env.example` menjadi `deploy/docker/.env` dan ubah
+`DASHBOARD_PORT` (misalnya `8090`) untuk memilih port host; jalankan Compose
+dengan `--env-file deploy/docker/.env` seperti di panduan.
 
 ### Apache (Windows/Linux)
 
