@@ -534,6 +534,21 @@ function rep_health($agent, $staleAfter)
         );
     }
 
+    if ($state === 'armed' || !empty($agent['failback_armed'])) {
+        $failbackMessage = isset($agent['failback_message']) ? trim((string) $agent['failback_message']) : '';
+        return array(
+            'key' => 'failback',
+            'label' => 'Mode darurat',
+            'tone' => 'warn',
+            'detail' => $failbackMessage !== ''
+                ? rep_truncate($failbackMessage, 400)
+                : 'Replikasi maju dijeda; agent menunggu master hidup kembali.',
+            'warnings' => $warnings,
+            'heartbeat_age' => $heartbeatAge,
+            'running_long' => false,
+        );
+    }
+
     if ($state === 'error' || $consecutive > 0) {
         return array(
             'key' => 'error',

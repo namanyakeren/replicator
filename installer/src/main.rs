@@ -7,6 +7,7 @@ use std::env;
 use std::path::PathBuf;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const AGENT_VERSION: &str = env!("AGENT_VERSION");
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -37,7 +38,10 @@ fn run(args: Vec<String>) -> Result<i32, String> {
         return Ok(0);
     }
     if cli.version {
-        ui::info_box(&format!("Replicator Setup {}", VERSION));
+        ui::info_box(&format!(
+            "Replicator Setup {}\nAgent tertanam: {}",
+            VERSION, AGENT_VERSION
+        ));
         return Ok(0);
     }
 
@@ -92,6 +96,7 @@ struct Cli {
     skip_db_setup: bool,
     no_autostart: bool,
     no_start: bool,
+    no_failback: bool,
 }
 
 impl Cli {
@@ -133,6 +138,7 @@ impl Cli {
                 "--skip-db-setup" => cli.skip_db_setup = true,
                 "--no-autostart" => cli.no_autostart = true,
                 "--no-start" => cli.no_start = true,
+                "--no-failback" => cli.no_failback = true,
                 other => return Err(format!("Opsi tidak dikenal: {}\n\n{}", other, help_text())),
             }
             index += 1;
@@ -199,6 +205,7 @@ impl Cli {
         input.setup_databases = !self.skip_db_setup;
         input.autostart = !self.no_autostart;
         input.start_now = !self.no_start;
+        input.failback_enabled = !self.no_failback;
         Ok(input)
     }
 }
@@ -214,7 +221,7 @@ fn parse_port(value: &str, name: &str) -> Result<u16, String> {
 
 fn help_text() -> String {
     format!(
-        "Replicator Setup {}\n\n\
+        "Replicator Setup {} (agent {})\n\n\
          PEMAKAIAN NORMAL\n\
          Klik dua kali replicator-setup.exe, isi form, lalu klik Pasang.\n\n\
          PEMASANGAN OTOMATIS (TANPA TAMPILAN)\n\
@@ -234,16 +241,19 @@ fn help_text() -> String {
            --agent-user <user>       User agent yang dibuat (default repl_agent)\n\
            --agent-password <pass>   Password user agent (otomatis bila kosong)\n\
            --skip-db-setup           Jangan buat user/grant/database\n\
+           --no-failback             Nonaktifkan mode darurat (failback)\n\
            --no-autostart            Jangan jalankan otomatis saat login\n\
            --no-start                Jangan jalankan agent setelah selesai\n\
-           --dir <folder>            Folder instalasi (default %LOCALAPPDATA%\\Replicator)\n\
+           --dir <folder>            Folder instalasi (default D:\\replicator)\n\
            --uninstall               Hapus agent dan autostart\n\
            --help                    Tampilkan bantuan ini\n\
-           --version                 Tampilkan versi installer\n\n\
+           --version                 Tampilkan versi installer dan agent\n\n\
+         Failback (mode darurat) aktif secara default: agent diberi hak tulis di\n\
+         master agar bisa menyalin balik backup -> master saat master hidup lagi.\n\n\
          Contoh:\n\
            replicator-setup.exe --silent --master-host 192.168.101.11 \\\n\
              --backup-host 192.168.101.12 --site Jakarta \\\n\
              --admin-password RahasiaAdmin --agent-password RahasiaAgent",
-        VERSION
+        VERSION, AGENT_VERSION
     )
 }

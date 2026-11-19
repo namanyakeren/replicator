@@ -172,7 +172,8 @@ impl StatusDb {
               state='starting', started_at=NOW(), heartbeat_at=NOW(), \
               master_host=VALUES(master_host), master_db=VALUES(master_db), \
               backup_host=VALUES(backup_host), backup_db=VALUES(backup_db), \
-              interval_sec=VALUES(interval_sec), \
+              interval_sec=VALUES(interval_sec), direction='forward', \
+              failback_armed=0, failback_state='', failback_message='', failback_last_at=NULL, \
               tables_total=0, tables_ok=0, tables_error=0, rows_read=0, rows_written=0, \
               rows_written_total=0, consecutive_errors=0, last_error=NULL, last_error_at=NULL, \
               cycle_started_at=NULL, cycle_finished_at=NULL, cycle_duration_ms=NULL, \
@@ -219,17 +220,83 @@ impl StatusDb {
         self.run("touch", move |conn| conn.query_drop(&sql));
     }
 
-    pub fn cycle_started(&mut self, cycle_no: u64) {
+    pub fn cycle_started(&mut self, cycle_no: u64, direction: &str) {
         let schema = self.schema.clone();
         let sql = format!(
-            "UPDATE {}.agent SET state='running', cycle_no=?, cycle_started_at=NOW(), \
+            "UPDATE {}.agent SET state='running', cycle_no=?, direction=?, cycle_started_at=NOW(), \
              cycle_finished_at=NULL, cycle_duration_ms=NULL, heartbeat_at=NOW(), \
              tables_total=0, tables_ok=0, tables_error=0, rows_read=0, rows_written=0, \
              next_run_at=NULL WHERE id=1",
             quote_ident(&schema)
         );
-        let params = vec![num(cycle_no)];
+        let params = vec![num(cycle_no), text(direction)];
         self.run("cycle_started", move |conn| conn.exec_drop(&sql, params.clone()));
+    }
+
+    /// Tandai agent sedang menunggu master hidup kembali (mode darurat).
+    pub fn mark_failback_armed(&mut self, failback_state: &str, message: &str) {
+        let schema = self.schema.clone();
+        let sql = format!(
+            "UPDATE {}.agent SET state='armed', heartbeat_at=NOW(), next_run_at=NULL, \
+             direction='reverse', failback_armed=1, failback_state=?, failback_message=? \
+             WHERE id=1",
+            quote_ident(&schema)
+        );
+        let params = vec![text(failback_state), text(&truncate_chars(message, 500))];
+        self.run("mark_failback_armed", move |conn| {
+            conn.exec_drop(&sql, params.clone())
+        });
+    }
+
+    /// Replikasi balik selesai: matikan mode darurat dan kembali normal.
+    pub fn mark_failback_done(&mut self, message: &str, next_run_sec: u64) {
+        let schema = self.schema.clone();
+        let sql = format!(
+            "UPDATE {}.agent SET state='ok', heartbeat_at=NOW(), cycle_finished_at=NOW(), \
+             direction='forward', failback_armed=0, failback_state='done', failback_message=?, \
+             failback_last_at=NOW(), consecutive_errors=0, last_error=NULL, last_error_at=NULL, \
+             next_run_at=FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + ?) WHERE id=1",
+            quote_ident(&schema)
+        );
+        let params = vec![
+            text(&truncate_chars(message, 500)),
+            num(next_run_sec),
+        ];
+        self.run("mark_failback_done", move |conn| {
+            conn.exec_drop(&sql, params.clone())
+        });
+    }
+
+    pub fn mark_failback_failed(&mut self, direction: &str, message: &str, duration_ms: u64) {
+        let schema = self.schema.clone();
+        let sql = format!(
+            "UPDATE {}.agent SET state='error', heartbeat_at=NOW(), cycle_finished_at=NOW(), \
+             cycle_duration_ms=?, direction=?, \
+             failback_armed=1, failback_state='error', failback_message=?, failback_last_at=NOW(), \
+             consecutive_errors=consecutive_errors+1, last_error=?, last_error_at=NOW() WHERE id=1",
+            quote_ident(&schema)
+        );
+        let params = vec![
+            num(duration_ms),
+            text(direction),
+            text(&truncate_chars(message, 500)),
+            text(&truncate_chars(message, 2000)),
+        ];
+        self.run("mark_failback_failed", move |conn| {
+            conn.exec_drop(&sql, params.clone())
+        });
+    }
+
+    /// Mode darurat dimatikan tanpa menjalankan replikasi balik.
+    pub fn mark_failback_off(&mut self) {
+        let schema = self.schema.clone();
+        let sql = format!(
+            "UPDATE {}.agent SET state='idle', heartbeat_at=NOW(), direction='forward', \
+             failback_armed=0, failback_state='off', failback_message='', next_run_at=NULL \
+             WHERE id=1",
+            quote_ident(&schema)
+        );
+        self.run("mark_failback_off", move |conn| conn.query_drop(&sql));
     }
 
     pub fn cycle_progress(
@@ -490,15 +557,15 @@ impl StatusDb {
         self.run("event", move |conn| conn.exec_drop(&sql, params.clone()));
     }
 
-    pub fn cycle_row_start(&mut self, cycle_no: u64) -> Option<u64> {
+    pub fn cycle_row_start(&mut self, cycle_no: u64, direction: &str) -> Option<u64> {
         let schema = self.schema.clone();
         let sql = format!(
             "INSERT INTO {}.cycle \
-             (cycle_no, started_at, status, tables_total, tables_error, rows_read, rows_written) \
-             VALUES (?, NOW(), 'running', 0, 0, 0, 0)",
+             (cycle_no, started_at, status, direction, tables_total, tables_error, rows_read, rows_written) \
+             VALUES (?, NOW(), 'running', ?, 0, 0, 0, 0)",
             quote_ident(&schema)
         );
-        let params = vec![num(cycle_no)];
+        let params = vec![num(cycle_no), text(direction)];
         self.run("cycle_row_start", move |conn| {
             conn.exec_drop(&sql, params.clone())?;
             Ok(conn.last_insert_id())
@@ -626,6 +693,11 @@ pub fn ensure_schema(conn: &mut Conn, schema: &str) -> Result<(), String> {
             hostname VARCHAR(128) NOT NULL DEFAULT '',
             version VARCHAR(32) NOT NULL DEFAULT '',
             state VARCHAR(16) NOT NULL DEFAULT '',
+            direction VARCHAR(8) NOT NULL DEFAULT '',
+            failback_armed TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            failback_state VARCHAR(16) NOT NULL DEFAULT '',
+            failback_message VARCHAR(500) NOT NULL DEFAULT '',
+            failback_last_at DATETIME NULL,
             started_at DATETIME NULL,
             heartbeat_at DATETIME NULL,
             cycle_no BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -697,6 +769,7 @@ pub fn ensure_schema(conn: &mut Conn, schema: &str) -> Result<(), String> {
             finished_at DATETIME NULL,
             duration_ms INT UNSIGNED NULL,
             status VARCHAR(16) NOT NULL DEFAULT '',
+            direction VARCHAR(8) NOT NULL DEFAULT '',
             tables_total INT UNSIGNED NOT NULL DEFAULT 0,
             tables_error INT UNSIGNED NOT NULL DEFAULT 0,
             rows_read BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -711,7 +784,48 @@ pub fn ensure_schema(conn: &mut Conn, schema: &str) -> Result<(), String> {
     for ddl in [ddl_agent, ddl_table, ddl_event, ddl_cycle] {
         conn.query_drop(ddl).map_err(db::err_msg)?;
     }
+
+    // Migrasi kolom untuk database status versi lama (MySQL 5.x tidak mengenal
+    // ADD COLUMN IF NOT EXISTS, jadi keberadaan kolom dicek lewat information_schema).
+    for (column, definition) in [
+        ("direction", "VARCHAR(8) NOT NULL DEFAULT ''"),
+        ("failback_armed", "TINYINT UNSIGNED NOT NULL DEFAULT 0"),
+        ("failback_state", "VARCHAR(16) NOT NULL DEFAULT ''"),
+        ("failback_message", "VARCHAR(500) NOT NULL DEFAULT ''"),
+        ("failback_last_at", "DATETIME NULL"),
+    ] {
+        ensure_column(conn, schema, "agent", column, definition)?;
+    }
+    ensure_column(conn, schema, "cycle", "direction", "VARCHAR(8) NOT NULL DEFAULT ''")?;
     Ok(())
+}
+
+/// Tambah kolom bila belum ada. Aman dijalankan berulang dan kompatibel MySQL 5.x.
+fn ensure_column(
+    conn: &mut Conn,
+    schema: &str,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> Result<(), String> {
+    let exists: Option<u8> = conn
+        .exec_first(
+            "SELECT 1 FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?",
+            (schema, table, column),
+        )
+        .map_err(db::err_msg)?;
+    if exists.is_some() {
+        return Ok(());
+    }
+    conn.query_drop(format!(
+        "ALTER TABLE {}.{} ADD COLUMN {} {}",
+        quote_ident(schema),
+        quote_ident(table),
+        quote_ident(column),
+        definition
+    ))
+    .map_err(db::err_msg)
 }
 
 fn text(value: &str) -> Value {

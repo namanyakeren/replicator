@@ -50,7 +50,6 @@ $setupExe = Join-Path $root "installer\target\release\replicator-setup.exe"
 
 function Find-MinGW {
     param([string]$Hint)
-
     if ($Hint) {
         if (Test-Path (Join-Path $Hint "gcc.exe")) {
             return (Resolve-Path $Hint).Path
@@ -76,6 +75,15 @@ function Find-MinGW {
         }
     }
     return $null
+}
+
+function Get-ManifestVersion {
+    param([string]$Path)
+    $text = Get-Content -Raw -Path $Path
+    if ($text -match '(?m)^\s*version\s*=\s*"([^"]+)"') {
+        return $Matches[1]
+    }
+    return "unknown"
 }
 
 foreach ($manifest in @($agentManifest, $installerManifest)) {
@@ -182,13 +190,40 @@ if (-not $NoCopy) {
     Copy-Item -Force $agent.FullName $agentTarget
     Copy-Item -Force $setup.FullName $setupTarget
 
+    $agentVersion = Get-ManifestVersion -Path $agentManifest
+    $setupVersion = Get-ManifestVersion -Path $installerManifest
+    $builtAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
     Write-Host ""
     Write-Host "Disalin ke dist\:" -ForegroundColor Green
+    $rows = @()
     foreach ($file in @($agentTarget, $setupTarget)) {
         $item = Get-Item $file
         $hash = (Get-FileHash -Algorithm SHA256 $file).Hash
+        $rows += [pscustomobject]@{ Name = $item.Name; Size = $item.Length; Sha256 = $hash }
         Write-Host ("  {0}  {1,8:N2} MB  SHA256 {2}" -f $item.Name, ($item.Length / 1MB), $hash)
     }
+
+    $manifest = New-Object System.Collections.Generic.List[string]
+    $manifest.Add("Replicator - daftar artefak rilis")
+    $manifest.Add("Dibuat      : $builtAt")
+    $manifest.Add("Agent       : $agentVersion")
+    $manifest.Add("Installer   : $setupVersion")
+    $manifest.Add("")
+    $manifest.Add("File di folder dist/:")
+    foreach ($row in $rows) {
+        $manifest.Add(("  {0}  {1:N0} byte  SHA256 {2}" -f $row.Name, $row.Size, $row.Sha256))
+    }
+    $manifest.Add("")
+    $manifest.Add("Cara pakai:")
+    $manifest.Add("  - Instalasi baru / update  : jalankan replicator-setup.exe")
+    $manifest.Add("  - Update agent saja        : hentikan agent, ganti replicator-agent.exe,")
+    $manifest.Add("                               lalu jalankan Mulai Agent.vbs")
+    $manifest.Add("  - Panduan lengkap          : docs/UPDATE-AGENT.md")
+    Set-Content -Path (Join-Path $dist "VERSIONS.txt") -Value $manifest -Encoding UTF8
+
+    Write-Host ""
+    Write-Host "Manifest dist\VERSIONS.txt ditulis (agent $agentVersion, installer $setupVersion)." -ForegroundColor Green
 }
 
 Write-Host ""

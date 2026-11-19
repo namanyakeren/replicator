@@ -1,4 +1,7 @@
-use std::time::Duration;use mysql::prelude::*;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::Duration;
+
+use mysql::prelude::*;
 use mysql::{Conn, OptsBuilder, Row, Value};
 
 use crate::config::DbCfg;
@@ -64,6 +67,18 @@ impl Column {
                 | "multipolygon"
                 | "geometrycollection"
         )
+    }
+}
+
+/// Cek cepat apakah host:port bisa dijangkau tanpa menunggu timeout MySQL.
+/// Dipakai pemantau mode darurat untuk mendeteksi master yang hidup kembali.
+pub fn tcp_reachable(cfg: &DbCfg, timeout: Duration) -> bool {
+    let address = format!("{}:{}", cfg.host, cfg.port);
+    match address.to_socket_addrs() {
+        Ok(addresses) => addresses
+            .into_iter()
+            .any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok()),
+        Err(_) => false,
     }
 }
 

@@ -10,8 +10,8 @@
 use std::collections::hash_map::DefaultHasher;
 use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -30,20 +30,22 @@ use windows_sys::Win32::System::Console::GetConsoleWindow;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     DispatchMessageW, FindWindowW, GetClientRect, GetCursorPos, GetMessageW, GetSystemMetrics,
     KillTimer, LoadCursorW, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SetForegroundWindow, SetTimer, ShowWindow, TrackPopupMenu, TranslateMessage,
-    IDC_ARROW, MB_ICONINFORMATION, MB_OK, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SW_SHOW, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_NULL, WM_PAINT,
-    WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
+    SetForegroundWindow, SetTimer, ShowWindow, TrackPopupMenu, TranslateMessage, IDC_ARROW, IDYES,
+    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_YESNO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+    SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
+    WM_LBUTTONDBLCLK, WM_NULL, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_CAPTION,
+    WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
 };
 
+use crate::failback::FailbackState;
 use crate::logger::Logger;
 use crate::UiState;
 
@@ -61,6 +63,9 @@ const ID_STOP: usize = 102;
 const ID_LOG: usize = 103;
 const ID_EXIT: usize = 104;
 const ID_MONITOR: usize = 105;
+const ID_ARM_FAILBACK: usize = 106;
+const ID_DISARM_FAILBACK: usize = 107;
+const ID_FAILBACK_NOW: usize = 108;
 
 const COLOR_OK: u32 = 0x002E7D32;
 const COLOR_WARN: u32 = 0x00008AA5;
@@ -71,12 +76,24 @@ const COLOR_BG: u32 = 0x00F7F9FC;
 const COLOR_CARD: u32 = 0x00FFFFFF;
 const COLOR_BORDER: u32 = 0x00D7DEE8;
 
+/// Pengaturan yang dibutuhkan menu tray (versi dan mode darurat).
+pub struct TrayOptions {
+    pub version: String,
+    pub failback: FailbackState,
+    pub failback_enabled: bool,
+    pub failback_auto: bool,
+    pub failback_after_sec: u64,
+    pub master_host: String,
+    pub master_port: u16,
+}
+
 struct Context {
     ui: Arc<Mutex<UiState>>,
     paused: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
     log_dir: PathBuf,
     logger: Arc<Logger>,
+    options: TrayOptions,
 }
 
 static CONTEXT: OnceLock<Context> = OnceLock::new();
@@ -97,6 +114,7 @@ pub fn run(
     log_dir: PathBuf,
     logger: Arc<Logger>,
     config_path: PathBuf,
+    options: TrayOptions,
 ) -> Result<(), String> {
     let _ = CONTEXT.set(Context {
         ui,
@@ -104,6 +122,7 @@ pub fn run(
         running,
         log_dir,
         logger,
+        options,
     });
 
     unsafe {
@@ -333,12 +352,18 @@ unsafe fn show_menu(hwnd: HWND) {
     } else {
         state_label(&snap.state).to_string()
     };
-    let status_line = format!("Status: {} | siklus #{}", state, snap.cycle_no);
+    let direction = direction_label(&snap.direction);
+    let status_line = format!(
+        "Status: {} | siklus #{} | v{}",
+        state, snap.cycle_no, ctx.options.version
+    );
+    let mode_line = mode_line(&snap, &ctx.options);
     let table_line = if snap.current_table.is_empty() {
-        "Sedang menyalin: menunggu tabel".to_string()
+        format!("Arah: {}", direction)
     } else {
         format!(
-            "Sedang menyalin: {} (tabel {} dari {})",
+            "Arah: {} | {} (tabel {} dari {})",
+            direction,
             truncate(&snap.current_table, 22),
             snap.table_index,
             snap.table_total
@@ -355,9 +380,11 @@ unsafe fn show_menu(hwnd: HWND) {
         return;
     }
     let status_w = to_wide(&status_line);
+    let mode_w = to_wide(&mode_line);
     let table_w = to_wide(&table_line);
     let rows_w = to_wide(&rows_line);
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, status_w.as_ptr());
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, mode_w.as_ptr());
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, table_w.as_ptr());
     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, rows_w.as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
@@ -379,6 +406,35 @@ unsafe fn show_menu(hwnd: HWND) {
         ID_STOP,
         stop_w.as_ptr(),
     );
+
+    if ctx.options.failback_enabled {
+        if snap.failback_armed {
+            let now_w = to_wide("Sinkronkan balik sekarang (backup -> master)");
+            let disarm_w = to_wide("Matikan mode darurat");
+            AppendMenuW(
+                menu,
+                MF_STRING | if paused { MF_GRAYED } else { 0 },
+                ID_FAILBACK_NOW,
+                now_w.as_ptr(),
+            );
+            AppendMenuW(menu, MF_STRING, ID_DISARM_FAILBACK, disarm_w.as_ptr());
+        } else {
+            let arm_w = to_wide(
+                if ctx.options.failback_auto {
+                    "Aktifkan mode darurat (otomatis saat master hidup)..."
+                } else {
+                    "Aktifkan mode darurat (manual)..."
+                },
+            );
+            AppendMenuW(
+                menu,
+                MF_STRING | if paused { MF_GRAYED } else { 0 },
+                ID_ARM_FAILBACK,
+                arm_w.as_ptr(),
+            );
+        }
+    }
+
     AppendMenuW(menu, MF_STRING, ID_MONITOR, monitor_w.as_ptr());
     AppendMenuW(menu, MF_STRING, ID_LOG, log_w.as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
@@ -432,6 +488,109 @@ unsafe fn perform_command(hwnd: HWND, command: usize) {
         }
         ID_LOG => open_log_folder(),
         ID_MONITOR => show_monitor(),
+        ID_ARM_FAILBACK => {
+            let auto_text = if ctx.options.failback_auto {
+                format!(
+                    "Setelah master hidup terus selama {} detik, agent menyalin PENUH backup -> master secara otomatis.",
+                    ctx.options.failback_after_sec
+                )
+            } else {
+                "Replikasi balik dijalankan manual lewat menu 'Sinkronkan balik sekarang'.".to_string()
+            };
+            let text = format!(
+                "Aktifkan mode darurat?\n\n\
+                 Replikasi master -> backup akan DIJEDA.\n\
+                 {}\n\n\
+                 Data di master {}:{} akan DITIMPA oleh data backup.\n\
+                 Pastikan master memang tidak dipakai menulis selama gangguan.\n\n\
+                 Lanjutkan?",
+                auto_text, ctx.options.master_host, ctx.options.master_port
+            );
+            if confirm(&text, "Aktifkan mode darurat") {
+                match ctx.options.failback.arm() {
+                    Ok(true) => {
+                        ctx.logger.info(
+                            "tray: mode darurat diaktifkan, replikasi maju dijeda",
+                        );
+                        if let Ok(mut ui) = ctx.ui.lock() {
+                            ui.state = "armed".to_string();
+                            ui.direction = "reverse".to_string();
+                            ui.failback_armed = true;
+                            ui.failback_state = "waiting".to_string();
+                            ui.phase.clear();
+                            ui.current_table.clear();
+                            ui.message = format!(
+                                "Mode darurat aktif: menunggu master {}:{} hidup kembali",
+                                ctx.options.master_host, ctx.options.master_port
+                            );
+                            ui.updated = Some(Instant::now());
+                        }
+                    }
+                    Ok(false) => message_box("Mode darurat sudah aktif.", "Replicator"),
+                    Err(error) => message_box(
+                        &format!("Tidak bisa mengaktifkan mode darurat:\n{}", error),
+                        "Replicator",
+                    ),
+                }
+            }
+            refresh_icon(hwnd);
+        }
+        ID_DISARM_FAILBACK => {
+            if confirm(
+                "Matikan mode darurat?\n\nReplikasi maju master -> backup akan dilanjutkan. \
+                 Replikasi balik tidak dijalankan sampai mode darurat diaktifkan lagi.",
+                "Matikan mode darurat",
+            ) {
+                match ctx.options.failback.disarm() {
+                    Ok(was_armed) => {
+                        ctx.logger.info("tray: mode darurat dimatikan oleh pengguna");
+                        if let Ok(mut ui) = ctx.ui.lock() {
+                            ui.failback_armed = false;
+                            ui.failback_state = "off".to_string();
+                            ui.direction = "forward".to_string();
+                            ui.state = "idle".to_string();
+                            ui.message =
+                                "Mode darurat dimatikan. Replikasi maju dilanjutkan.".to_string();
+                            ui.updated = Some(Instant::now());
+                        }
+                        if !was_armed {
+                            message_box("Mode darurat memang tidak aktif.", "Replicator");
+                        }
+                    }
+                    Err(error) => message_box(
+                        &format!("Tidak bisa mematikan mode darurat:\n{}", error),
+                        "Replicator",
+                    ),
+                }
+            }
+            refresh_icon(hwnd);
+        }
+        ID_FAILBACK_NOW => {
+            if confirm(
+                "Jalankan replikasi balik sekarang?\n\nAgent akan menyalin PENUH data dari \
+                 backup ke master. Data di master akan DITIMPA.\n\nLanjutkan hanya bila master \
+                 sudah hidup dan tidak dipakai menulis.",
+                "Sinkronkan balik sekarang",
+            ) {
+                match ctx.options.failback.request_now() {
+                    Ok(()) => {
+                        ctx.logger
+                            .info("tray: permintaan replikasi balik dikirim ke engine");
+                        if let Ok(mut ui) = ctx.ui.lock() {
+                            ui.failback_armed = true;
+                            ui.failback_state = "waiting".to_string();
+                            ui.message = "Permintaan replikasi balik dikirim. Menunggu master...".to_string();
+                            ui.updated = Some(Instant::now());
+                        }
+                    }
+                    Err(error) => message_box(
+                        &format!("Tidak bisa mengirim permintaan replikasi balik:\n{}", error),
+                        "Replicator",
+                    ),
+                }
+            }
+            refresh_icon(hwnd);
+        }
         ID_EXIT => {
             ctx.logger.info("tray: keluar atas permintaan pengguna");
             ctx.running.store(false, Ordering::SeqCst);
@@ -529,12 +688,17 @@ unsafe fn paint_monitor(hwnd: HWND) {
         "Monitor Replikasi",
         COLOR_TEXT,
     );
+    let mode = if snap.failback_armed {
+        "Darurat"
+    } else {
+        "Normal"
+    };
     draw_text(
         hdc,
         normal_font,
         22,
         52,
-        &format!("Status: {}", state),
+        &format!("Status: {}  |  Mode: {}", state, mode),
         state_color,
     );
     draw_text(
@@ -543,8 +707,12 @@ unsafe fn paint_monitor(hwnd: HWND) {
         22,
         76,
         &format!(
-            "Siklus #{}  |  tabel selesai {}/{}  |  OK {}  gagal {}",
-            snap.cycle_no, snap.tables_ok, snap.table_total, snap.tables_ok, snap.tables_error
+            "Siklus #{}  |  v{}  |  tabel selesai {}/{}  |  gagal {}",
+            snap.cycle_no,
+            ctx.options.version,
+            snap.tables_ok,
+            snap.table_total,
+            snap.tables_error
         ),
         COLOR_TEXT,
     );
@@ -561,7 +729,7 @@ unsafe fn paint_monitor(hwnd: HWND) {
     } else {
         format!(
             "{}  (tabel {} dari {})",
-            truncate(&snap.current_table, 34),
+            truncate(&snap.current_table, 26),
             snap.table_index,
             snap.table_total
         )
@@ -571,7 +739,12 @@ unsafe fn paint_monitor(hwnd: HWND) {
         normal_font,
         22,
         104,
-        &format!("{}: {}", phase, table),
+        &format!(
+            "{}  |  {}: {}",
+            direction_label(&snap.direction),
+            phase,
+            table
+        ),
         COLOR_TEXT,
     );
 
@@ -686,7 +859,7 @@ unsafe fn paint_monitor(hwnd: HWND) {
         small_font,
         34,
         card_top + 14,
-        "Klik kanan ikon R di taskbar: Mulai agent, Hentikan agent, Monitor, Buka log, Keluar.",
+        "Klik kanan ikon R: Mulai/Hentikan agent, mode darurat, monitor, log, keluar.",
         COLOR_MUTED,
     );
     draw_text(
@@ -695,8 +868,9 @@ unsafe fn paint_monitor(hwnd: HWND) {
         34,
         card_top + 36,
         &format!(
-            "Site: {}  |  waktu update: {}",
-            truncate(&snap.site, 28),
+            "Site: {}  |  v{}  |  update: {}",
+            truncate(&snap.site, 24),
+            ctx.options.version,
             age_text(snap.updated)
         ),
         COLOR_MUTED,
@@ -786,25 +960,33 @@ fn snapshot() -> (usize, UiState) {
 
 fn tooltip() -> String {
     let (_, snap) = snapshot();
-    let paused = CONTEXT
-        .get()
+    let ctx = CONTEXT.get();
+    let paused = ctx
         .map(|ctx| ctx.paused.load(Ordering::SeqCst))
         .unwrap_or(false);
+    let version = ctx.map(|ctx| ctx.options.version.as_str()).unwrap_or("");
     let state = if paused {
         "Berhenti"
     } else {
         state_label(&snap.state)
     };
+    let mode = if snap.failback_armed {
+        "DARURAT"
+    } else {
+        "normal"
+    };
     let text = if paused || snap.current_table.trim().is_empty() {
         format!(
-            "Replicator - {} | siklus #{} | OK {} gagal {}",
-            state, snap.cycle_no, snap.tables_ok, snap.tables_error
+            "Replicator {} - {} | {} | siklus #{} | OK {} gagal {}",
+            version, state, mode, snap.cycle_no, snap.tables_ok, snap.tables_error
         )
     } else {
         format!(
-            "Replicator - {} | {} ({}/{})",
+            "Replicator {} - {} | {} | {} ({}/{})",
+            version,
             state,
-            truncate(&snap.current_table, 24),
+            mode,
+            truncate(&snap.current_table, 20),
             snap.table_index,
             snap.table_total
         )
@@ -815,7 +997,7 @@ fn tooltip() -> String {
 fn icon_kind(state: &str) -> usize {
     match state {
         "error" => 2,
-        "warning" | "partial" => 1,
+        "warning" | "partial" | "armed" => 1,
         "ok" | "syncing" => 0,
         _ => 3,
     }
@@ -827,12 +1009,37 @@ fn state_label(state: &str) -> &'static str {
         "warning" => "Peringatan",
         "partial" => "Sebagian gagal",
         "error" => "Error",
+        "armed" => "Mode darurat",
         "paused" => "Berhenti",
         "syncing" => "Mereplikasi",
         "idle" => "Menunggu",
         "starting" => "Memulai",
         _ => "Menunggu",
     }
+}
+
+fn direction_label(direction: &str) -> &'static str {
+    if direction == "reverse" {
+        "backup -> master"
+    } else {
+        "master -> backup"
+    }
+}
+
+fn mode_line(snap: &UiState, options: &TrayOptions) -> String {
+    if !options.failback_enabled {
+        return "Mode darurat: tidak diaktifkan di config".to_string();
+    }
+    if !snap.failback_armed {
+        return "Mode darurat: normal".to_string();
+    }
+    let detail = match snap.failback_state.as_str() {
+        "running" => "menjalankan replikasi balik backup -> master",
+        "error" => "gagal, menunggu percobaan ulang",
+        "done" => "selesai",
+        _ => "menunggu master hidup kembali",
+    };
+    format!("Mode darurat: AKTIF ({})", detail)
 }
 
 fn phase_label(phase: &str) -> &'static str {
@@ -990,12 +1197,33 @@ unsafe fn open_log_folder() {
     let Some(ctx) = CONTEXT.get() else {
         return;
     };
-    if let Err(error) = Command::new("explorer").arg(&ctx.log_dir).spawn() {
+    let folder = match std::fs::canonicalize(&ctx.log_dir) {
+        Ok(folder) => folder,
+        Err(error) => {
+            message_box(&format!("Folder log tidak ditemukan:\n{}\n\n{}", ctx.log_dir.display(), error), "Replicator");
+            return;
+        }
+    };
+    let action = to_wide("open");
+    let folder_w: Vec<u16> = folder
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let result = ShellExecuteW(
+        0,
+        action.as_ptr(),
+        folder_w.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+        SW_SHOWNORMAL,
+    );
+    if result as isize <= 32 {
         message_box(
             &format!(
-                "Tidak bisa membuka folder log:\n{}\n\n{}",
-                ctx.log_dir.display(),
-                error
+                "Tidak bisa membuka folder log:\n{}\n\nKode Windows: {}",
+                folder.display(),
+                result as isize
             ),
             "Replicator",
         );
@@ -1006,6 +1234,17 @@ unsafe fn message_box(text: &str, title: &str) {
     let text_w = to_wide(text);
     let title_w = to_wide(title);
     MessageBoxW(0, text_w.as_ptr(), title_w.as_ptr(), MB_OK | MB_ICONINFORMATION);
+}
+
+unsafe fn confirm(text: &str, title: &str) -> bool {
+    let text_w = to_wide(text);
+    let title_w = to_wide(title);
+    MessageBoxW(
+        0,
+        text_w.as_ptr(),
+        title_w.as_ptr(),
+        MB_YESNO | MB_ICONWARNING,
+    ) == IDYES
 }
 
 fn copy_wide(dest: &mut [u16], value: &str) {

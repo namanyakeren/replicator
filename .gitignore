@@ -1,11 +1,15 @@
 # Hasil build Rust
 agent/target/
-installer/target/
-dist/
 *.exe
 *.pdb
 *.rlib
 *.rmeta
+
+# Installer build outputs are intentionally tracked for site clones.
+!installer/target/**
+
+# Artefak rilis dist/ sengaja dilacak di git (binary + manifest versi)
+!dist/*.exe
 
 # Runtime agent
 logs/

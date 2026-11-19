@@ -206,8 +206,20 @@ if (!$isAll) {
 
 $healthMeta = array();
 if ($agent) {
+    if (!empty($agent['version'])) {
+        $healthMeta[] = 'agent v' . $agent['version'];
+    }
     if (!empty($agent['cycle_no'])) {
         $healthMeta[] = 'siklus #' . (int) $agent['cycle_no'];
+    }
+    $direction = isset($agent['direction']) ? strtolower((string) $agent['direction']) : '';
+    if ($direction === 'reverse') {
+        $healthMeta[] = 'arah backup → master';
+    } elseif ($direction === 'forward') {
+        $healthMeta[] = 'arah master → backup';
+    }
+    if (!empty($agent['failback_armed'])) {
+        $healthMeta[] = 'mode darurat aktif';
     }
     if (!empty($agent['heartbeat_at'])) {
         $healthMeta[] = 'heartbeat ' . rep_ago($agent['heartbeat_at']);

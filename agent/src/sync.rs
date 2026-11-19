@@ -51,6 +51,7 @@ pub fn run_cycle(
     logger: &Logger,
     status: &mut StatusDb,
     _cycle_no: u64,
+    force_full: bool,
     progress: Option<ProgressCallback>,
 ) -> Result<CycleOutcome, String> {
     let started = Instant::now();
@@ -112,6 +113,7 @@ pub fn run_cycle(
             status,
             table,
             &updated_from,
+            force_full,
             &mut stats,
             progress,
             table_index,
@@ -196,6 +198,7 @@ fn sync_table(
     status: &mut StatusDb,
     table: &str,
     updated_from: &str,
+    force_full_cycle: bool,
     stats: &mut CycleStats,
     progress: Option<ProgressCallback>,
     table_index: usize,
@@ -246,7 +249,7 @@ fn sync_table(
         },
     );
 
-    let mut force_full = state.force_full || !state.synced;
+    let mut force_full = force_full_cycle || state.force_full || !state.synced;
     let exists = db::table_exists(backup, &cfg.backup.database, table)?;
 
     if exists {

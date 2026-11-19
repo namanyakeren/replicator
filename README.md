@@ -25,7 +25,9 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - [Mode status: langsung atau pusat](#mode-status-langsung-atau-pusat)
 - [Contoh alamat VPN](#contoh-alamat-vpn)
 - [Cara kerja sinkronisasi](#cara-kerja-sinkronisasi)
+- [Mode darurat (failback)](#mode-darurat-failback)
 - [Menjalankan agent](#menjalankan-agent)
+- [Versi dan artefak rilis](#versi-dan-artefak-rilis)
 - [Build agent dan installer dari source](#build-agent-dan-installer-dari-source)
 - [Deploy dashboard](#deploy-dashboard)
 - [Preview dashboard dengan Podman](#preview-dashboard-dengan-podman)
@@ -54,6 +56,8 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - **Installer satu file** (`replicator-setup.exe`) yang membuat config, user MySQL, grant, database backup, dan schema status otomatis.
 - **Ikon tray** dengan menu Mulai, Hentikan, Monitor replikasi, Buka log, dan Keluar.
 - **Monitor replikasi langsung**: tabel yang sedang disalin, fase, dan jumlah baris.
+- **Mode darurat (failback)**: saat master mati dan backup dipakai sebagai database utama, agent menjeda replikasi maju lalu menyalin balik backup → master secara otomatis begitu master hidup kembali. Bisa diaktifkan dari tray, CLI, atau installer.
+- **Versi agent terlihat** di installer, `--version`, ikon tray, monitor, dashboard, dan schema status.
 - Mendukung **port MySQL kustom** untuk master dan backup.
 - Autostart per-user tanpa hak Administrator; tetap bisa dipasang sebagai Scheduled Task.
 - Tahan putus koneksi MySQL dan menulis log harian.
@@ -65,6 +69,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - Tambah dan hapus site dari halaman **Site** hanya dengan IP master dan IP slave; registry tersimpan di file `sites.ini` terpisah.
 - Halaman ringkasan agregat: jumlah site normal, warning, error, offline, dan tabel bermasalah.
 - Kartu status per site dengan alamat master → backup, heartbeat, siklus, dan jumlah tabel.
+- Indikator **Mode darurat**, arah replikasi (`master → backup` / `backup → master`), dan versi agent di kartu site serta halaman Config.
 - Pemilih site di header; halaman tabel, kejadian, siklus, dan diagnostik mengikuti site terpilih.
 - Mode **Semua site** untuk melihat tabel, kejadian, dan siklus gabungan.
 - Koneksi PDO di-cache per host/user sehingga banyak site yang memakai database status pusat hanya membuka satu koneksi.
@@ -130,18 +135,19 @@ replicator/
 │  ├─ src/
 │  │  ├─ config.rs                # Parser config + validasi
 │  │  ├─ db.rs                    # Koneksi MySQL
-│  │  ├─ main.rs                  # CLI, runner, notifikasi
-│  │  ├─ status.rs                # Tabel _rep, heartbeat, event
+│  │  ├─ failback.rs              # Penanda mode darurat (arm/request/disarm)
+│  │  ├─ main.rs                  # CLI, runner, notifikasi, failback
+│  │  ├─ status.rs                # Tabel _rep, heartbeat, event, migrasi kolom
 │  │  ├─ sync.rs                  # Full load, incremental, verifikasi
 │  │  ├─ tray.rs                  # Ikon tray + monitor replikasi GDI
 │  │  └─ util.rs
 │  └─ Cargo.toml
 ├─ installer/                     # Installer satu file (Rust + Win32)
 │  ├─ src/
-│  │  ├─ main.rs                  # Argumen GUI/silent
+│  │  ├─ main.rs                  # Argumen GUI/silent, --version
 │  │  ├─ install.rs               # User MySQL, grant, config, autostart
 │  │  └─ ui.rs                    # Form pemasangan
-│  └─ build.rs                    # Menyematkan replicator-agent.exe
+│  └─ build.rs                    # Menyematkan agent + versinya
 ├─ dashboard/                     # Document root PHP (tanpa config)
 │  ├─ index.php
 │  ├─ lib/
@@ -158,16 +164,18 @@ replicator/
 │  └─ sites.ini                   # Dibuat otomatis dari halaman Site
 ├─ deploy/podman/                 # Demo lokal (Containerfile, SQL, compose)
 ├─ docs/
-│  ├─ DEPLOY-AGENT.md             # Tutorial deploy agent
-│  └─ DEPLOY-DASHBOARD.md         # Tutorial deploy dashboard
+│  ├─ DEPLOY-AGENT.md             # Tutorial deploy agent + mode darurat
+│  ├─ DEPLOY-DASHBOARD.md         # Tutorial deploy dashboard
+│  └─ UPDATE-AGENT.md             # Update, rollback, dan versioning agent
 ├─ scripts/
 │  ├─ build-agent.ps1
-│  ├─ build-installer.ps1         # Build agent + installer ke dist\
+│  ├─ build-installer.ps1         # Build agent + installer ke dist\ + VERSIONS.txt
 │  ├─ install-task.ps1
 │  ├─ uninstall-task.ps1
 │  └─ serve-dashboard.ps1
+├─ installer/target/               # Hasil build installer (dilacak di git)
+├─ dist/                           # Binary rilis + manifest hash (dilacak di git)
 ├─ sql/                           # Grant MySQL 5.x
-├─ dist/                          # Binary hasil build (tidak di-commit)
 ├─ config.example.ini             # Template lama single-site
 └─ README.md
 ```
@@ -226,9 +234,12 @@ agent, lalu klik dua kali. Isi form:
 | Password admin | password admin server |
 | User agent | `repl_agent` |
 
+Centang **Aktifkan mode darurat/failback** (default aktif) bila agent boleh
+menyalin balik backup → master saat master hidup lagi.
+
 Installer otomatis:
 
-1. membuat user `repl_agent` di master dengan hak **SELECT, SHOW VIEW**;
+1. membuat user `repl_agent` di master dengan hak **SELECT, SHOW VIEW** (ditambah hak tulis dan DDL bila mode darurat aktif);
 2. membuat user `repl_agent` di backup dengan hak baca-tulis dan DDL;
 3. membuat database aplikasi di backup dan schema status `_rep_<site>`;
 4. menulis `config\agent.ini`, `replicator-agent.exe`, launcher, dan uninstaller;
@@ -289,21 +300,22 @@ Buka `http://localhost:8080/`, masuk ke menu **Site**, lalu isi:
 
 Dashboard menentukan nama schema `_rep_jakarta` secara otomatis. Installer
 memakai aturan yang sama; pastikan schema di config agent
-(`%LOCALAPPDATA%\Replicator\config\agent.ini`) sama dengan yang tampil di halaman
+(`D:\replicator\config\agent.ini`) sama dengan yang tampil di halaman
 Site. Untuk produksi, gunakan Apache/IIS dan HTTPS; lihat
 [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
 
 ### 4. Pantau agent dari ikon tray
 
 - Klik dua kali ikon **R** untuk membuka **Monitor Replikasi**.
-- Klik kanan untuk **Mulai agent**, **Hentikan agent**, **Monitor replikasi**,
-  **Buka folder log**, atau **Keluar**.
-- Monitor menampilkan tabel yang sedang disalin, fase, dan jumlah baris.
+- Klik kanan untuk **Mulai agent**, **Hentikan agent**, **Aktifkan/Matikan mode
+  darurat**, **Monitor replikasi**, **Buka folder log**, atau **Keluar**.
+- Monitor menampilkan arah replikasi, mode, versi agent, tabel yang sedang
+  disalin, fase, dan jumlah baris.
 
 Agent juga bisa diuji dari command line:
 
 ```powershell
-cd $env:LOCALAPPDATA\Replicator
+cd D:\replicator
 .\replicator-agent.exe --config .\config\agent.ini --check
 .\replicator-agent.exe --config .\config\agent.ini --once
 ```
@@ -314,9 +326,12 @@ Bila installer tidak boleh membuat user MySQL, buat grant manual di master dan
 backup. Ganti password dan batasi host seperlunya.
 
 ```sql
--- Master: agent hanya membaca
-GRANT SELECT ON `appdb`.* TO 'repl_agent'@'%'
+-- Master: agent membaca data. Tambahkan hak tulis bila memakai mode darurat.
+GRANT SELECT, SHOW VIEW ON `appdb`.* TO 'repl_agent'@'%'
     IDENTIFIED BY 'GANTI_PASSWORD_MASTER';
+-- Mode darurat (failback) membutuhkan hak tulis di master:
+-- GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
+--     ON `appdb`.* TO 'repl_agent'@'%';
 
 -- Backup: agent menulis data aplikasi dan schema status
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
@@ -384,7 +399,8 @@ Panduan langkah demi langkah (Bahasa Indonesia) untuk mesin produksi:
 
 | Dokumen | Isi |
 |---|---|
-| [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Installer satu file, port MySQL kustom, pembuatan user/grant otomatis, ikon tray + monitor, uji `--check`/`--once`, pemasangan manual, autostart/Scheduled Task, update/uninstall/rollback, troubleshooting. |
+| [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Installer satu file, port MySQL kustom, pembuatan user/grant otomatis, ikon tray + monitor, mode darurat (failback), uji `--check`/`--once`, pemasangan manual, autostart/Scheduled Task, update/uninstall/rollback, troubleshooting. |
+| [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md) | Update agent lewat installer atau binary saja, pemeriksaan versi, update grant failback, rollback, dan riwayat versi. |
 | [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | PHP + `pdo_mysql`, mode status langsung/pusat, grant read-only, config `dashboard.ini`, IIS/Apache/nginx, izin tulis `sites.ini`, tambah site, keamanan, troubleshooting. |
 
 Ringkasnya: **agent dipasang di tiap site** (Windows 7–11) dan **dashboard cukup
@@ -398,7 +414,7 @@ Agent dan dashboard sekarang memakai file konfigurasi terpisah. Ini mencegah kre
 
 | Environment | Template | File aktif | Dibaca oleh |
 |---|---|---|---|
-| Agent (installer) | dibuat installer | `%LOCALAPPDATA%\Replicator\config\agent.ini` | `replicator-agent.exe` |
+| Agent (installer) | dibuat installer | `D:\replicator\config\agent.ini` | `replicator-agent.exe` |
 | Agent (manual) | `config/agent.example.ini` | `config/agent.ini` | `replicator-agent.exe` |
 | Dashboard | `config/dashboard.example.ini` | `config/dashboard.ini` | PHP dashboard |
 | Lama (single-site) | `config.example.ini` | `config.ini` | Keduanya (fallback) |
@@ -724,6 +740,50 @@ Agent akan melakukan full load pada siklus berikutnya.
 
 ---
 
+## Mode darurat (failback)
+
+Mode darurat dipakai bila **master mati** dan aplikasi sementara diarahkan ke
+**backup** sebagai database utama. Perubahan yang terjadi di backup harus bisa
+disalin balik ke master saat master hidup lagi.
+
+```ini
+[failback]
+enabled = "true"     ; izinkan mode darurat (butuh hak tulis di master)
+auto = "true"        ; jalankan otomatis setelah master hidup
+after_sec = 120      ; lama master harus hidup terus sebelum replikasi balik
+state_file = "failback.armed"
+```
+
+Alur:
+
+1. Operator mengaktifkan mode darurat dari tray (**Aktifkan mode darurat**) atau
+   CLI `--arm-failback`.
+2. Replikasi maju (master → backup) **dijeda**; status menjadi `armed` dan
+   dashboard menampilkan **Mode darurat**.
+3. Agent memantau master. Setelah master bisa dijangkau terus selama
+   `after_sec`, agent menjalankan **full load backup → master** (tabel target
+   di-truncate, FK check dimatikan).
+4. Bila berhasil, penanda darurat dihapus dan replikasi maju kembali normal.
+   Bila gagal, mode darurat tetap aktif dan dicoba lagi.
+
+Perintah manual:
+
+```powershell
+.\replicator-agent.exe --config .\config\agent.ini --arm-failback
+.\replicator-agent.exe --config .\config\agent.ini --failback
+.\replicator-agent.exe --config .\config\agent.ini --disarm-failback
+```
+
+> **PERINGATAN:** replikasi balik **menimpa** data master dengan data backup.
+> Aktifkan hanya bila master benar-benar tidak dipakai menulis selama gangguan.
+> Saat mode darurat aktif, jangan menulis ke master sampai proses selesai.
+> Bila `auto = "false"`, agent menunggu perintah **Sinkronkan balik sekarang**
+> dari tray atau `--failback`.
+
+Panduan lengkap ada di [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md#61-mode-darurat-failback).
+
+---
+
 ## Menjalankan agent
 
 ```powershell
@@ -736,6 +796,11 @@ Agent akan melakukan full load pada siklus berikutnya.
 # Mode tray: ikon di pojok kanan bawah + monitor replikasi
 .\replicator-agent.exe --tray --config .\config\agent.ini
 
+# Mode darurat (failback): aktifkan, jalankan sekarang, atau batalkan
+.\replicator-agent.exe --arm-failback --config .\config\agent.ini
+.\replicator-agent.exe --failback --config .\config\agent.ini
+.\replicator-agent.exe --disarm-failback --config .\config\agent.ini
+
 # Mode loop (foreground, tanpa ikon tray)
 .\replicator-agent.exe --config .\config\agent.ini
 
@@ -744,7 +809,7 @@ Agent akan melakukan full load pada siklus berikutnya.
 .\replicator-agent.exe --version
 ```
 
-Pada instalasi lewat installer, file berada di `%LOCALAPPDATA%\Replicator` dan
+Pada instalasi lewat installer, file berada di `D:\replicator` dan
 launcher `Mulai Agent.vbs` menjalankan mode `--tray`.
 
 Tanpa `--config`, agent mencari `config\agent.ini` seperti dijelaskan pada [urutan pencarian config](#urutan-pencarian-config-agent).
@@ -796,6 +861,31 @@ Ikon **R** muncul di pojok kanan bawah taskbar saat agent berjalan dengan `--tra
 
 ---
 
+## Versi dan artefak rilis
+
+Folder `dist/` menyimpan artefak siap pakai dan **dilacak di git**:
+
+```text
+dist/
+├─ replicator-setup.exe    # installer satu file (agent sudah disematkan)
+├─ replicator-agent.exe    # binary agent untuk update manual
+└─ VERSIONS.txt            # versi, ukuran, dan SHA256 tiap file
+```
+
+`VERSIONS.txt` dibuat otomatis oleh `scripts/build-installer.ps1`. Versi agent
+juga terlihat di:
+
+- `replicator-agent.exe --version`;
+- tooltip, menu, dan jendela monitor ikon tray;
+- pesan selesai installer dan `BACA SAYA.txt`;
+- halaman **Config** dashboard dan kartu site di **Overview**;
+- kolom `version` pada tabel `_rep_<site>.agent`.
+
+Versi saat ini: **agent 1.1.0**, **installer 1.1.0**, **dashboard 2.0.0**.
+Panduan update dan rollback: [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md).
+
+---
+
 ## Build agent dan installer dari source
 
 Prasyarat:
@@ -810,8 +900,9 @@ rustup target add x86_64-pc-windows-gnu --toolchain 1.77.2-x86_64-pc-windows-gnu
 .\scripts\build-installer.ps1
 ```
 
-Hasil di `dist\`: `replicator-agent.exe` dan `replicator-setup.exe`. Installer
-menyematkan agent, jadi build agent selalu dijalankan lebih dulu.
+Hasil di `dist\`: `replicator-agent.exe`, `replicator-setup.exe`, dan
+`VERSIONS.txt`. Installer menyematkan agent, jadi build agent selalu dijalankan
+lebih dulu; versi agent dibaca dari `agent\Cargo.toml`.
 
 Build agent saja:
 
@@ -992,10 +1083,12 @@ GRANT SELECT ON `_rep%`.* TO 'repl_dashboard'@'%';
 
 | User | Master | Backup | Database status pusat |
 |---|---|---|---|
-| `repl_agent` | SELECT pada `appdb` | DML + DDL pada `appdb` dan `_rep%` | DML + DDL pada `_rep%` |
+| `repl_agent` | SELECT + SHOW VIEW pada `appdb`; tambah DML + DDL bila mode darurat aktif | DML + DDL pada `appdb` dan `_rep%` | DML + DDL pada `_rep%` |
 | `repl_dashboard` | — | SELECT pada `_rep%` | SELECT pada `_rep%` |
 
 Agent tidak membutuhkan `SUPER`, `PROCESS`, `FILE`, atau `GRANT OPTION`.
+Installer memberi hak tulis master otomatis saat opsi mode darurat dicentang
+(bisa dilewati dengan `--no-failback`).
 
 ---
 
@@ -1029,11 +1122,11 @@ $env:REPLICATOR_DASHBOARD_CONFIG = (Resolve-Path .\config\dashboard.ini)
 
 Periksa path `--config`, atau buat `config\agent.ini` dari template. Pada
 instalasi installer, file ada di
-`%LOCALAPPDATA%\Replicator\config\agent.ini`. Pastikan file tidak terkunci/ACL.
+`D:\replicator\config\agent.ini`. Pastikan file tidak terkunci/ACL.
 
 ### Installer gagal atau berhenti tanpa pesan
 
-- Lihat `%LOCALAPPDATA%\Replicator\install.log`.
+- Lihat `D:\replicator\install.log`.
 - Bila folder instalasi belum terbentuk, lihat
   `%TEMP%\replicator-setup-error.log`.
 - Pastikan database aplikasi sudah ada di master.
@@ -1103,11 +1196,29 @@ Ini normal. Tabel tanpa primary key/unique key hanya diverifikasi berkala. Tamba
 
 Pastikan user status punya hak membuat schema `_rep_<site>` dan tabel di database pusat, serta `status.schema` unik.
 
+### Mode darurat gagal dengan `Access denied`
+
+Agent belum punya hak tulis di master. Jalankan installer ulang dengan opsi
+failback aktif, atau tambahkan grant tulis secara manual (lihat
+[Grant MySQL](#grant-mysql) dan [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md#6-update-grant-mysql-untuk-failback)).
+Mode darurat tetap aktif dan dicoba lagi setelah grant diperbaiki.
+
+### Mode darurat aktif terus setelah update
+
+File `config\failback.armed` tersisa dari sesi sebelumnya. Matikan lewat tray
+(**Matikan mode darurat**) atau:
+
+```powershell
+.\replicator-agent.exe --disarm-failback --config .\config\agent.ini
+```
+
 ---
 
 ## Batasan
 
 - Replikasi berbasis polling, bukan binlog/GTID. Jeda minimum `[sync] interval_sec` adalah 5 detik.
+- Mode darurat hanya menyalin **satu arah** backup → master saat master hidup lagi; bukan replikasi dua arah bersamaan.
+- Replikasi balik menimpa data master, jadi hanya aman bila master tidak menerima tulisan selama gangguan.
 - Deteksi DELETE bergantung pada verifikasi checksum berkala; bukan real-time.
 - Tabel tanpa primary key/unique key tidak dapat di-upsert secara inkremental.
 - Perubahan struktur yang kompleks (rename kolom, perubahan tipe) dapat memerlukan full load/recreate.
@@ -1128,6 +1239,8 @@ Pastikan user status punya hak membuat schema `_rep_<site>` dan tabel di databas
 - [ ] Grant dashboard hanya SELECT pada `_rep%`.
 - [ ] Grant agent dibatasi ke host/IP yang benar.
 - [ ] `status_schema` unik untuk setiap site (mode pusat).
+- [ ] Mode darurat diuji (arm → master hidup → replikasi balik → normal).
+- [ ] Grant tulis master hanya aktif bila mode darurat memang dipakai.
 - [ ] Ikon tray muncul dan monitor replikasi menampilkan progres.
 - [ ] Agent berjalan otomatis (autostart per-user atau Scheduled Task), tidak keduanya.
 - [ ] NTP aktif di master, backup, dan server status.

@@ -64,6 +64,9 @@ const ID_START_NOW: i32 = 1032;
 const ID_STATUS: i32 = 1033;
 const ID_INSTALL: i32 = 1034;
 const ID_CANCEL: i32 = 1035;
+const ID_FAILBACK: i32 = 1036;
+
+const AGENT_VERSION: &str = env!("AGENT_VERSION");
 
 struct Fonts {
     title: isize,
@@ -114,7 +117,7 @@ pub fn run() -> Result<i32, String> {
         }
 
         let width = 700;
-        let height = 680;
+        let height = 720;
         let x = (GetSystemMetrics(SM_CXSCREEN) - width).max(0) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - height).max(0) / 2;
         let hwnd = CreateWindowExW(
@@ -432,12 +435,26 @@ unsafe fn create_controls(hwnd: HWND) -> Result<(), String> {
         ID_START_NOW,
         true,
     );
+    add_checkbox(
+        hwnd,
+        instance,
+        "Aktifkan mode darurat/failback (beri hak tulis di master)",
+        24,
+        528,
+        630,
+        22,
+        ID_FAILBACK,
+        true,
+    );
     add_static(
         hwnd,
         instance,
-        "Siap. Isi data koneksi lalu klik Pasang.",
+        &format!(
+            "Agent v{}. Siap. Isi data koneksi lalu klik Pasang.",
+            AGENT_VERSION
+        ),
         24,
-        528,
+        556,
         630,
         38,
         fonts.small,
@@ -448,13 +465,13 @@ unsafe fn create_controls(hwnd: HWND) -> Result<(), String> {
         instance,
         "Pasang",
         444,
-        574,
+        604,
         110,
         32,
         ID_INSTALL,
         true,
     );
-    add_button(hwnd, instance, "Batal", 562, 574, 88, 32, ID_CANCEL, false);
+    add_button(hwnd, instance, "Batal", 562, 604, 88, 32, ID_CANCEL, false);
 
     update_backup_password(hwnd);
     update_schema(hwnd);
@@ -747,10 +764,12 @@ unsafe fn poll_progress(hwnd: HWND) {
 fn success_text(report: &install::InstallReport) -> String {
     let mut text = format!(
         "Instalasi selesai.\n\n\
+         Versi agent   : {}\n\
          Site          : {}\n\
          Schema status : {}\n\
          Charset       : {}\n\
          Folder        : {}\n",
+        AGENT_VERSION,
         report.site_id,
         report.schema,
         report.charset,
@@ -762,6 +781,14 @@ fn success_text(report: &install::InstallReport) -> String {
     if let Some(version) = &report.backup_version {
         text.push_str(&format!("MySQL backup  : {}\n", version));
     }
+    text.push_str(&format!(
+        "Mode darurat  : {}\n",
+        if report.failback_enabled {
+            "aktif (otomatis saat master hidup)"
+        } else {
+            "nonaktif"
+        }
+    ));
     text.push_str("\n");
     if report.started {
         text.push_str(
@@ -776,6 +803,13 @@ fn success_text(report: &install::InstallReport) -> String {
     }
     if report.autostart {
         text.push_str("Agent akan berjalan otomatis setiap kali Anda login.\n\n");
+    }
+    if report.failback_enabled {
+        text.push_str(
+            "MODE DARURAT: klik kanan ikon R lalu pilih \"Aktifkan mode darurat\" bila\n\
+             master mati dan backup dipakai sebagai database utama. Agent akan menyalin\n\
+             PENUH backup -> master setelah master hidup kembali, lalu kembali normal.\n\n",
+        );
     }
     text.push_str(
         "PENTING: daftarkan site di dashboard dengan schema status yang sama,\n\
@@ -808,6 +842,7 @@ unsafe fn read_input(hwnd: HWND) -> Result<InstallInput, String> {
     input.setup_databases = checked(hwnd, ID_SETUP_DB);
     input.autostart = checked(hwnd, ID_AUTOSTART);
     input.start_now = checked(hwnd, ID_START_NOW);
+    input.failback_enabled = checked(hwnd, ID_FAILBACK);
     Ok(input)
 }
 

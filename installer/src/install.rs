@@ -15,6 +15,7 @@ use windows_sys::Win32::System::Registry::{
 };
 
 const AGENT_EXE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/replicator-agent.exe"));
+const AGENT_VERSION: &str = env!("AGENT_VERSION");
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const RUN_VALUE: &str = "ReplicatorAgent";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -35,6 +36,7 @@ pub struct InstallInput {
     pub setup_databases: bool,
     pub autostart: bool,
     pub start_now: bool,
+    pub failback_enabled: bool,
 }
 
 impl InstallInput {
@@ -55,6 +57,7 @@ impl InstallInput {
             setup_databases: true,
             autostart: true,
             start_now: true,
+            failback_enabled: true,
         }
     }
 
@@ -86,25 +89,13 @@ pub struct InstallReport {
     pub charset: String,
     pub master_version: Option<String>,
     pub backup_version: Option<String>,
+    pub failback_enabled: bool,
     pub started: bool,
     pub autostart: bool,
 }
 
 pub fn default_install_dir() -> PathBuf {
-    if let Ok(local) = env::var("LOCALAPPDATA") {
-        if !local.trim().is_empty() {
-            return PathBuf::from(local).join("Replicator");
-        }
-    }
-    if let Ok(profile) = env::var("USERPROFILE") {
-        if !profile.trim().is_empty() {
-            return PathBuf::from(profile)
-                .join("AppData")
-                .join("Local")
-                .join("Replicator");
-        }
-    }
-    PathBuf::from("Replicator")
+    PathBuf::from(r"D:\replicator")
 }
 
 pub fn validate(input: &InstallInput) -> Result<(), String> {
@@ -200,6 +191,11 @@ fn install_inner(
         append_log(&log_path, message);
     };
 
+    note(&format!(
+        "Memasang agent Replicator v{} ke {}...",
+        AGENT_VERSION,
+        dir.display()
+    ));
     note("Menghentikan agent lama bila sedang berjalan...");
     stop_agent();
     thread::sleep(Duration::from_millis(700));
@@ -234,6 +230,11 @@ fn install_inner(
             "Membuat/memperbarui user '{}' di master...",
             input.agent_user
         ));
+        let master_privileges = if input.failback_enabled {
+            "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES"
+        } else {
+            "SELECT, SHOW VIEW"
+        };
         for account_host in agent_hosts(input.master_host.trim()) {
             ensure_user(
                 &mut master,
@@ -244,13 +245,17 @@ fn install_inner(
             )?;
             grant(
                 &mut master,
-                "SELECT, SHOW VIEW",
+                master_privileges,
                 &input.database,
                 &input.agent_user,
                 account_host,
             )?;
         }
-        note("Grant baca master selesai (SELECT, SHOW VIEW).");
+        if input.failback_enabled {
+            note("Grant master selesai (baca + tulis untuk failback).");
+        } else {
+            note("Grant baca master selesai (SELECT, SHOW VIEW).");
+        }
         master_version = Some(version);
         drop(master);
 
@@ -391,6 +396,7 @@ fn install_inner(
         charset,
         master_version,
         backup_version,
+        failback_enabled: input.failback_enabled,
         started,
         autostart: input.autostart,
     })
@@ -519,6 +525,12 @@ fn config_text(input: &InstallInput, site_id: &str, schema: &str, charset: &str)
          event_retention_days = 30\n\
          cycle_history_rows = 500\n\
          \n\
+         [failback]\n\
+         enabled = \"{failback_enabled}\"\n\
+         auto = \"true\"\n\
+         after_sec = 120\n\
+         state_file = \"failback.armed\"\n\
+         \n\
          [notify]\n\
          command = \"\"\n\
          cooldown_sec = 300\n",
@@ -537,6 +549,7 @@ fn config_text(input: &InstallInput, site_id: &str, schema: &str, charset: &str)
         password = ini_escape(&input.agent_password),
         database = ini_escape(input.database.trim()),
         charset = ini_escape(charset),
+        failback_enabled = if input.failback_enabled { "true" } else { "false" },
     )
 }
 
@@ -575,18 +588,30 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
     format!(
         "REPLICATOR AGENT\r\n\
          =================\r\n\r\n\
-         Agent sudah dipasang di komputer ini.\r\n\r\n\
+         Agent sudah dipasang di komputer ini.\r\n\
+         \r\n\
+         Versi agent   : {agent_version}\r\n\
          Site          : {site}\r\n\
          Master MySQL  : {master}:{master_port}\r\n\
          Backup MySQL  : {backup}:{backup_port}\r\n\
          Database      : {database}\r\n\
          Schema status : {schema}\r\n\
-         User agent    : {user}\r\n\r\n\
+         User agent    : {user}\r\n\
+         Mode darurat  : {failback_status}\r\n\r\n\
          CARA MEMAKAI\r\n\
          1. Ikon R akan muncul di pojok kanan bawah taskbar.\r\n\
-         2. Klik kanan ikon R untuk Mulai agent, Hentikan agent, Monitor replikasi,\r\n\
-         \x20  Buka folder log, atau Keluar.\r\n\
+         2. Klik kanan ikon R untuk Mulai agent, Hentikan agent, mode darurat,\r\n\
+         \x20  Monitor replikasi, Buka folder log, atau Keluar.\r\n\
          3. Klik dua kali ikon R untuk langsung membuka jendela monitor.\r\n\r\n\
+         MODE DARURAT (FAILBACK)\r\n\
+         Dipakai bila master mati dan backup dipakai sebagai database utama:\r\n\
+         1. Klik kanan ikon R, pilih \"Aktifkan mode darurat\".\r\n\
+         2. Replikasi master -> backup dijeda; agent menunggu master hidup kembali.\r\n\
+         3. Setelah master hidup terus 120 detik, agent menyalin PENUH backup -> master.\r\n\
+         4. Bila berhasil, mode darurat mati otomatis dan replikasi kembali normal.\r\n\
+         PERINGATAN: data di master akan DITIMPA data backup. Pastikan master\r\n\
+         memang tidak dipakai menulis selama gangguan. Mode darurat juga bisa\r\n\
+         diaktifkan dari command line: replicator-agent --arm-failback\r\n\r\n\
          Jika ikon belum muncul, klik dua kali file Mulai Agent.vbs di folder ini.\r\n\r\n\
          Lokasi file:\r\n\
          - Program : {exe}\r\n\
@@ -598,6 +623,12 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
             "(otomatis)"
         } else {
             input.site.trim()
+        },
+        agent_version = AGENT_VERSION,
+        failback_status = if input.failback_enabled {
+            "aktif (otomatis setelah master hidup)"
+        } else {
+            "nonaktif"
         },
         master = input.master_host.trim(),
         master_port = input.master_port,

@@ -1,0 +1,4 @@
+cargo:rustc-env=AGENT_VERSION=1.1.0
+cargo:rerun-if-changed=D:\replicator\agent\target\release\replicator-agent.exe
+cargo:rerun-if-changed=D:\replicator\agent\Cargo.toml
+cargo:rerun-if-changed=build.rs

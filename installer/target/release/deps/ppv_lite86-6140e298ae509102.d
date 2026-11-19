@@ -1,0 +1,11 @@
+D:\replicator\installer\target\release\deps\libppv_lite86-6140e298ae509102.rmeta: C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src/lib.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\soft.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\types.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\mod.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\sse2.rs
+
+D:\replicator\installer\target\release\deps\libppv_lite86-6140e298ae509102.rlib: C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src/lib.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\soft.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\types.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\mod.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\sse2.rs
+
+D:\replicator\installer\target\release\deps\ppv_lite86-6140e298ae509102.d: C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src/lib.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\soft.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\types.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\mod.rs C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\sse2.rs
+
+C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src/lib.rs:
+C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\soft.rs:
+C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\types.rs:
+C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\mod.rs:
+C:\Users\ADMIN\.cargo\registry\src\index.crates.io-6f17d22bba15001f\ppv-lite86-0.2.21\src\x86_64\sse2.rs:

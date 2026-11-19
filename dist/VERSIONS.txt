@@ -1,0 +1,14 @@
+﻿Replicator - daftar artefak rilis
+Dibuat      : 2026-11-20 01:05:53
+Agent       : 1.1.0
+Installer   : 1.1.0
+
+File di folder dist/:
+  replicator-agent.exe  2,216,960 byte  SHA256 36BCDA46B390677BD23F58DC564B5BE0A35A72B12E9C06747413D5C3CC061034
+  replicator-setup.exe  4,267,008 byte  SHA256 E758EDB3F10FD1C643657933016575C08BF5782F844FE6833998240B39BE4EF2
+
+Cara pakai:
+  - Instalasi baru / update  : jalankan replicator-setup.exe
+  - Update agent saja        : hentikan agent, ganti replicator-agent.exe,
+                               lalu jalankan Mulai Agent.vbs
+  - Panduan lengkap          : docs/UPDATE-AGENT.md

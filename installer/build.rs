@@ -51,6 +51,24 @@ fn main() {
     let target = out_dir.join("replicator-agent.exe");
     fs::copy(agent, &target).expect("gagal menyalin agent ke folder build installer");
 
+    // Versi agent dibaca dari agent/Cargo.toml agar installer dan readme selalu
+    // menampilkan versi yang benar-benar disematkan.
+    let agent_manifest = root.join("agent").join("Cargo.toml");
+    let agent_version = fs::read_to_string(&agent_manifest)
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix("version")?.trim();
+                let value = rest.strip_prefix('=')?.trim();
+                Some(value.trim_matches('"').to_string())
+            })
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=AGENT_VERSION={}", agent_version);
+
     println!("cargo:rerun-if-changed={}", agent.display());
+    println!("cargo:rerun-if-changed={}", agent_manifest.display());
     println!("cargo:rerun-if-changed=build.rs");
 }

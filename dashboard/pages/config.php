@@ -334,6 +334,15 @@ $nowLocal->setTimezone(rep_timezone());
         <dd><?php echo rep_fmt_datetime($agent['started_at']); ?></dd>
         <dt>Siklus terakhir</dt>
         <dd>#<?php echo (int) $agent['cycle_no']; ?> · <?php echo h($agent['state']); ?></dd>
+        <dt>Arah replikasi</dt>
+        <dd><?php echo isset($agent['direction']) && $agent['direction'] === 'reverse' ? 'Backup → Master' : 'Master → Backup'; ?></dd>
+        <dt>Mode darurat</dt>
+        <dd>
+            <?php echo !empty($agent['failback_armed']) ? 'Aktif' : 'Normal'; ?>
+            <?php if (!empty($agent['failback_message'])): ?>
+                <small class="cell-sub"><?php echo h(rep_truncate($agent['failback_message'], 120)); ?></small>
+            <?php endif; ?>
+        </dd>
         <dt>Error beruntun</dt>
         <dd><?php echo (int) $agent['consecutive_errors']; ?></dd>
         <dt>Waktu master</dt>

@@ -88,6 +88,18 @@ pub struct NotifyCfg {
     pub cooldown_sec: u64,
 }
 
+/// Replikasi balik (failback): menyalin data dari backup ke master setelah
+/// master hidup lagi. Hanya berjalan bila diaktifkan dan di-arm oleh operator.
+#[derive(Clone, Debug)]
+pub struct FailbackCfg {
+    pub enabled: bool,
+    /// Jalankan otomatis setelah master terdeteksi hidup selama `after_sec`.
+    pub auto: bool,
+    pub after_sec: u64,
+    /// Penanda persisten agar mode darurat bertahan setelah agent restart.
+    pub state_file: PathBuf,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub path: PathBuf,
@@ -103,6 +115,7 @@ pub struct Config {
     pub verify: VerifyCfg,
     pub status: StatusCfg,
     pub notify: NotifyCfg,
+    pub failback: FailbackCfg,
 }
 
 impl Config {
@@ -112,7 +125,14 @@ impl Config {
         let map = parse_ini(&raw)?;
 
         let mut reader = Reader::new(&map);
-        let base_dir = path
+        let absolute_path = fs::canonicalize(path).map_err(|e| {
+            format!(
+                "tidak bisa menentukan path config {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let base_dir = absolute_path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| p.to_path_buf())
@@ -229,6 +249,17 @@ impl Config {
             cooldown_sec: reader.u64("notify", "cooldown_sec", 300),
         };
 
+        let failback_state_file = resolve_path(
+            &base_dir,
+            &reader.string("failback", "state_file", "failback.armed"),
+        );
+        let failback = FailbackCfg {
+            enabled: reader.boolean("failback", "enabled", true),
+            auto: reader.boolean("failback", "auto", true),
+            after_sec: reader.u64("failback", "after_sec", 120).clamp(5, 86_400),
+            state_file: failback_state_file,
+        };
+
         if !reader.errors.is_empty() {
             let mut message = String::from("konfigurasi tidak valid:");
             for error in &reader.errors {
@@ -252,6 +283,7 @@ impl Config {
             verify,
             status,
             notify,
+            failback,
         })
     }
 
@@ -264,7 +296,7 @@ impl Config {
             None => format!("{}/{} (backup)", self.backup.host, self.status.schema),
         };
         format!(
-            "master={}:{}/{} backup={}:{}/{} include=[{}] exclude=[{}] interval={}s verify={}s status={}",
+            "master={}:{}/{} backup={}:{}/{} include=[{}] exclude=[{}] interval={}s verify={}s failback={} status={}",
             self.master.host,
             self.master.port,
             self.master.database,
@@ -276,6 +308,15 @@ impl Config {
             self.sync.interval_sec,
             if self.verify.enabled {
                 self.verify.interval_sec.to_string()
+            } else {
+                "off".to_string()
+            },
+            if self.failback.enabled {
+                if self.failback.auto {
+                    format!("auto/{}s", self.failback.after_sec)
+                } else {
+                    "manual".to_string()
+                }
             } else {
                 "off".to_string()
             },
@@ -310,6 +351,13 @@ impl Config {
             )),
             None => text.push_str("\nstatus_connection=backup (default)"),
         }
+        text.push_str(&format!(
+            "\nfailback_enabled={} auto={} after_sec={} state_file={}",
+            self.failback.enabled,
+            self.failback.auto,
+            self.failback.after_sec,
+            self.failback.state_file.display()
+        ));
         text
     }
 }

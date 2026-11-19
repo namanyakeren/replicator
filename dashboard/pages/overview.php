@@ -122,7 +122,11 @@ if ($isAll) {
                     <?php endif; ?>
 
                     <div class="site-card-foot">
-                        <span class="mono muted">schema <?php echo h($site['schema']); ?></span>
+                        <span class="mono muted">
+                            schema <?php echo h($site['schema']); ?>
+                            <?php if ($rowAgent && !empty($rowAgent['version'])): ?> · v<?php echo h($rowAgent['version']); ?><?php endif; ?>
+                            <?php if ($rowAgent && !empty($rowAgent['failback_armed'])): ?> · darurat<?php endif; ?>
+                        </span>
                         <span class="site-card-links">
                             <a class="link" href="<?php echo h(rep_url('overview', array('site' => $site['id']))); ?>">Ringkasan</a>
                             <a class="link" href="<?php echo h(rep_url('tables', array('site' => $site['id']))); ?>">Tabel</a>
@@ -317,7 +321,11 @@ $cycleChrono = array_reverse($cycles);
     <article class="kpi">
         <span class="kpi-label">Siklus</span>
         <strong class="kpi-value">#<?php echo (int) $agent['cycle_no']; ?></strong>
-        <span class="kpi-foot"><?php echo h($agent['state']); ?> · <?php echo rep_ago($agent['cycle_finished_at']); ?></span>
+        <span class="kpi-foot">
+            <?php echo h($agent['state']); ?>
+            · <?php echo isset($agent['direction']) && $agent['direction'] === 'reverse' ? 'backup → master' : 'master → backup'; ?>
+            · <?php echo rep_ago($agent['cycle_finished_at']); ?>
+        </span>
     </article>
     <article class="kpi">
         <span class="kpi-label">Tabel sehat</span>

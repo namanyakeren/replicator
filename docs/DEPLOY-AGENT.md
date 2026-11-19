@@ -141,6 +141,8 @@ akan terbuka. Isi form berikut:
 Centang yang diinginkan:
 
 - **Buat user MySQL, grant, dan database backup otomatis** — biarkan aktif.
+- **Aktifkan mode darurat/failback** — biarkan aktif agar agent boleh menyalin
+  balik backup → master saat master hidup lagi (memberi hak tulis di master).
 - **Jalankan otomatis saat login** — agent hidup lagi setiap kali pengguna login.
 - **Mulai agent sekarang** — agent langsung berjalan setelah instalasi.
 
@@ -151,7 +153,8 @@ Klik **Pasang**. Installer menampilkan progres dan berhenti dengan pesan hasil.
 1. Menghentikan agent lama bila sedang berjalan.
 2. Menghubungkan ke MySQL master dan membaca versinya.
 3. Memastikan database aplikasi ada di master.
-4. Membuat/memperbarui user agent di master dengan hak **SELECT, SHOW VIEW**.
+4. Membuat/memperbarui user agent di master dengan hak **SELECT, SHOW VIEW**
+   (ditambah hak tulis + DDL bila mode darurat/failback diaktifkan).
 5. Menghubungkan ke MySQL backup.
 6. Membuat database aplikasi dan schema status di backup bila belum ada.
 7. Membuat/memperbarui user agent di backup dengan hak baca-tulis dan DDL.
@@ -166,14 +169,15 @@ lebih lama, supaya tetap kompatibel dengan MySQL 5.1.
 ### 4.4 Lokasi hasil instalasi
 
 ```text
-%LOCALAPPDATA%\Replicator\
+D:\replicator\
 ├─ replicator-agent.exe
 ├─ Mulai Agent.vbs          # launcher (dipakai autostart)
 ├─ Hapus Agent.vbs          # uninstaller
 ├─ BACA SAYA.txt
 ├─ install.log              # log langkah instalasi
 ├─ config\
-│  └─ agent.ini             # dibuat otomatis
+│  ├─ agent.ini             # dibuat otomatis
+│  └─ failback.armed        # hanya ada saat mode darurat aktif
 └─ logs\
    ├─ agent.log
    └─ status.json
@@ -195,7 +199,7 @@ menampilkan schema yang dipakai pada pesan selesai dan di `BACA SAYA.txt`.
 
 ### 4.6 Bila ingin mengubah config
 
-Edit `%LOCALAPPDATA%\Replicator\config\agent.ini`, lalu hentikan dan mulai ulang
+Edit `D:\replicator\config\agent.ini`, lalu hentikan dan mulai ulang
 agent dari ikon tray. Perubahan tidak dibaca otomatis saat agent masih berjalan.
 
 ---
@@ -244,16 +248,17 @@ Contoh dengan port kustom dan port berbeda per server:
 | `--agent-user <user>` | User agent yang dibuat (default `repl_agent`). |
 | `--agent-password <pass>` | Password agent (otomatis bila kosong). |
 | `--skip-db-setup` | Jangan buat user/grant/database. |
+| `--no-failback` | Nonaktifkan mode darurat; master hanya diberi hak baca. |
 | `--no-autostart` | Jangan daftarkan autostart. |
 | `--no-start` | Jangan jalankan agent setelah selesai. |
-| `--dir <folder>` | Folder instalasi (default `%LOCALAPPDATA%\Replicator`). |
+| `--dir <folder>` | Folder instalasi (default `D:\replicator`). |
 | `--uninstall` | Hapus agent dan autostart. |
 | `--help` | Tampilkan bantuan. |
 | `--version` | Tampilkan versi installer. |
 
 ### Log dan kode keluar
 
-- Log langkah instalasi: `%LOCALAPPDATA%\Replicator\install.log`.
+- Log langkah instalasi: `D:\replicator\install.log`.
 - Bila gagal sebelum folder instalasi siap:
   `%TEMP%\replicator-setup-error.log`.
 - Kode keluar `0` = berhasil, `1` = gagal.
@@ -285,6 +290,50 @@ Jendela monitor menampilkan:
 - jumlah baris yang sudah dibaca/ditulis,
 - ringkasan tabel OK dan tabel error.
 
+### 6.1 Mode darurat (failback)
+
+Dipakai bila **master mati** dan aplikasi sementara memakai **backup** sebagai
+database utama. Tujuannya agar perubahan yang terjadi di backup bisa disalin
+balik ke master saat master hidup lagi.
+
+Alur:
+
+1. Klik kanan ikon **R** → **Aktifkan mode darurat**.
+   Bisa juga dari command line: `replicator-agent --config ... --arm-failback`.
+2. Replikasi maju (master → backup) **dijeda**. Agent menulis status `armed` dan
+   terus mengirim heartbeat, jadi dashboard menampilkan **Mode darurat**.
+3. Saat master bisa dijangkau terus selama `[failback] after_sec` (default 120
+   detik), agent menjalankan **full load backup → master**.
+4. Bila berhasil, penanda darurat dihapus dan replikasi maju kembali normal.
+5. Bila gagal, mode darurat tetap aktif dan agent mencoba lagi. Periksa
+   `agent.log` dan pesan di dashboard/tray.
+
+Menu tray saat mode darurat aktif:
+
+| Aksi | Hasil |
+|---|---|
+| **Sinkronkan balik sekarang** | Menjalankan replikasi balik secepatnya (tetap menunggu master bisa dijangkau). |
+| **Matikan mode darurat** | Membatalkan mode darurat tanpa menjalankan replikasi balik. |
+
+Perintah manual:
+
+```powershell
+# Aktifkan mode darurat (replikasi maju dijeda)
+.\replicator-agent.exe --config .\config\agent.ini --arm-failback
+
+# Jalankan replikasi balik satu kali sekarang
+.\replicator-agent.exe --config .\config\agent.ini --failback
+
+# Batalkan mode darurat tanpa replikasi balik
+.\replicator-agent.exe --config .\config\agent.ini --disarm-failback
+```
+
+> **PERINGATAN:** replikasi balik **menimpa** data master dengan data backup.
+> Aktifkan hanya bila master benar-benar tidak dipakai menulis selama gangguan.
+> Saat mode darurat aktif, jangan menulis ke master sampai proses selesai.
+> Bila `[failback] auto = "false"`, agent menunggu perintah operator dan tidak
+> menjalankan replikasi balik sendiri.
+
 Menjalankan launcher lagi saat agent sudah hidup **tidak** membuka dua proses.
 Instance kedua hanya membuka jendela monitor milik agent yang sedang berjalan.
 
@@ -301,7 +350,7 @@ folder instalasi.
 ### 7.1 Periksa config dan koneksi
 
 ```powershell
-cd $env:LOCALAPPDATA\Replicator
+cd D:\replicator
 .\replicator-agent.exe --config .\config\agent.ini --check
 ```
 
@@ -535,12 +584,22 @@ Cara paling aman: jalankan installer baru dengan pilihan yang sama. Installer
 menghentikan agent lama, menimpa binary, menulis ulang config, dan menjalankan
 agent kembali. Data di database tidak dihapus.
 
+Versi agent yang tertanam terlihat di:
+
+- judul/pesan selesai installer (`Agent v...`),
+- `replicator-agent.exe --version`,
+- ikon tray dan jendela monitor,
+- halaman Config dashboard (`Versi agent`).
+
+Artefak rilis dan daftar versi/hash ada di `dist\VERSIONS.txt`. Panduan update
+dan rollback lengkap ada di [`UPDATE-AGENT.md`](UPDATE-AGENT.md).
+
 Update manual:
 
 ```powershell
 # Hentikan dari tray: klik kanan → Keluar
-Copy-Item .\replicator-agent.exe "$env:LOCALAPPDATA\Replicator\replicator-agent.exe" -Force
-& "$env:LOCALAPPDATA\Replicator\replicator-agent.exe" --version
+Copy-Item .\replicator-agent.exe "D:\replicator\replicator-agent.exe" -Force
+& "D:\replicator\replicator-agent.exe" --version
 ```
 
 Lalu klik dua kali `Mulai Agent.vbs`.
@@ -550,7 +609,7 @@ Lalu klik dua kali `Mulai Agent.vbs`.
 Klik dua kali:
 
 ```text
-%LOCALAPPDATA%\Replicator\Hapus Agent.vbs
+D:\replicator\Hapus Agent.vbs
 ```
 
 atau dari command line:
@@ -570,21 +629,24 @@ DROP USER 'repl_agent'@'%';
 
 ### Rollback
 
-Simpan binary lama sebelum update:
+Simpan binary lama dan catat versinya sebelum update:
 
 ```powershell
-Copy-Item "$env:LOCALAPPDATA\Replicator\replicator-agent.exe" `
-          "$env:LOCALAPPDATA\Replicator\replicator-agent.exe.bak"
+$dir = "D:\replicator"
+& "$dir\replicator-agent.exe" --version
+Copy-Item "$dir\replicator-agent.exe" "$dir\replicator-agent.exe.bak"
 ```
 
 Kembalikan:
 
 ```powershell
-Copy-Item "$env:LOCALAPPDATA\Replicator\replicator-agent.exe.bak" `
-          "$env:LOCALAPPDATA\Replicator\replicator-agent.exe" -Force
+Copy-Item "D:\replicator\replicator-agent.exe.bak" `
+          "D:\replicator\replicator-agent.exe" -Force
 ```
 
-Config tidak berubah saat rollback binary.
+Config tidak berubah saat rollback binary. Bila rollback dilakukan dengan
+installer versi lama, kolom baru pada schema status (mis. `direction` dan
+`failback_*`) tetap ada dan diabaikan oleh agent lama.
 
 ---
 
@@ -619,9 +681,9 @@ Config tidak berubah saat rollback binary.
 
 | Log | Lokasi |
 |---|---|
-| Langkah instalasi | `%LOCALAPPDATA%\Replicator\install.log` |
+| Langkah instalasi | `D:\replicator\install.log` |
 | Error sebelum folder siap | `%TEMP%\replicator-setup-error.log` |
-| Agent berjalan | `%LOCALAPPDATA%\Replicator\logs\agent.log` |
+| Agent berjalan | `D:\replicator\logs\agent.log` |
 | Uninstall | `%TEMP%\replicator-uninstall.log` |
 
 ---
