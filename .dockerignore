@@ -1,10 +1,14 @@
-agent/target/
-dist/
-logs/
-*.log
+# Kecilkan build context tanpa memutus demo Podman (dashboard.demo.ini).
 .git/
 .vscode/
 .idea/
-config/agent.ini
-config/dashboard.ini
+agent/
+installer/
+dist/
+logs/
+*.log
+config/
 config.ini
+dashboard/config.ini
+deploy/docker/config/
+deploy/podman/.env

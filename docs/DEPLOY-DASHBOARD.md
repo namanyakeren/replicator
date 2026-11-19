@@ -5,6 +5,8 @@ Dashboard hanya **membaca** database status; semua penulisan data dilakukan oleh
 agent di masing-masing site.
 
 > Dokumentasi agent ada di [`DEPLOY-AGENT.md`](DEPLOY-AGENT.md).
+> Jika ingin menjalankan dashboard dengan Docker, lihat
+> [`DEPLOY-DASHBOARD-DOCKER.md`](DEPLOY-DASHBOARD-DOCKER.md).
 
 ---
 

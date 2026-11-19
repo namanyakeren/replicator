@@ -163,9 +163,11 @@ replicator/
 │  ├─ dashboard.example.ini       # Template environment dashboard
 │  └─ sites.ini                   # Dibuat otomatis dari halaman Site
 ├─ deploy/podman/                 # Demo lokal (Containerfile, SQL, compose)
+├─ deploy/docker/                 # Dashboard produksi dengan Docker Compose
 ├─ docs/
 │  ├─ DEPLOY-AGENT.md             # Tutorial deploy agent + mode darurat
 │  ├─ DEPLOY-DASHBOARD.md         # Tutorial deploy dashboard
+│  ├─ DEPLOY-DASHBOARD-DOCKER.md  # Deploy dashboard PHP dengan Docker
 │  └─ UPDATE-AGENT.md             # Update, rollback, dan versioning agent
 ├─ scripts/
 │  ├─ build-agent.ps1
@@ -402,6 +404,7 @@ Panduan langkah demi langkah (Bahasa Indonesia) untuk mesin produksi:
 | [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Installer satu file, port MySQL kustom, pembuatan user/grant otomatis, ikon tray + monitor, mode darurat (failback), uji `--check`/`--once`, pemasangan manual, autostart/Scheduled Task, update/uninstall/rollback, troubleshooting. |
 | [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md) | Update agent lewat installer atau binary saja, pemeriksaan versi, update grant failback, rollback, dan riwayat versi. |
 | [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | PHP + `pdo_mysql`, mode status langsung/pusat, grant read-only, config `dashboard.ini`, IIS/Apache/nginx, izin tulis `sites.ini`, tambah site, keamanan, troubleshooting. |
+| [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md) | Docker Compose untuk dashboard PHP, konfigurasi persisten di luar document root, akses MySQL site/pusat, update dan backup. |
 
 Ringkasnya: **agent dipasang di tiap site** (Windows 7–11) dan **dashboard cukup
 satu instance** di lokasi yang bisa menjangkau database status semua site.
@@ -937,6 +940,7 @@ Build MSVC:
 ## Deploy dashboard
 
 Panduan lengkap: [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
+Untuk Docker Compose tanpa database demo: [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md).
 
 ### Apache (Windows/Linux)
 
