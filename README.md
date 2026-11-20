@@ -19,11 +19,6 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - [Kebutuhan](#kebutuhan)
 - [Mulai cepat](#mulai-cepat)
 - [Tutorial deployment](#tutorial-deployment)
-- [Dua environment: agent dan dashboard](#dua-environment-agent-dan-dashboard)
-- [Dashboard multi-site](#dashboard-multi-site)
-- [Kelola site dari dashboard](#kelola-site-dari-dashboard)
-- [Mode status: langsung atau pusat](#mode-status-langsung-atau-pusat)
-- [Cara dashboard membaca status setiap site](#cara-dashboard-membaca-status-setiap-site)
 - [Contoh alamat VPN](#contoh-alamat-vpn)
 - [Cara kerja sinkronisasi](#cara-kerja-sinkronisasi)
 - [Mode darurat (failback)](#mode-darurat-failback)
@@ -31,7 +26,6 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - [Versi dan artefak rilis](#versi-dan-artefak-rilis)
 - [Build agent dan installer dari source](#build-agent-dan-installer-dari-source)
 - [Deploy dashboard](#deploy-dashboard)
-- [Deploy dashboard dengan Podman](#deploy-dashboard-dengan-podman)
 - [Grant MySQL](#grant-mysql)
 - [Keamanan](#keamanan)
 - [Troubleshooting](#troubleshooting)
@@ -52,7 +46,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - Opsi `recreate_on_drift`, `disable_fk_checks`, dan `truncate_before_full_load`.
 - Batch insert yang dapat diatur untuk tabel besar.
 - Heartbeat ringan agar siklus panjang tidak terlihat mati.
-- Status, riwayat siklus, dan kejadian ditulis ke schema `_rep` (default) atau database status pusat.
+- Status, riwayat siklus, dan kejadian ditulis ke schema status pada backup.
 - Notifikasi eksternal lewat perintah/HTTP hook saat error atau pulih.
 - **Installer satu file** (`replicator-setup.exe`) yang membuat config, user MySQL, grant, database backup, dan schema status otomatis.
 - **Ikon tray** dengan menu Mulai, Hentikan, Monitor replikasi, Buka log, dan Keluar.
@@ -67,15 +61,10 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 ### Dashboard (PHP native)
 
 - Satu dashboard untuk banyak site.
-- Tambah dan hapus site dari halaman **Site** hanya dengan IP master dan IP slave; registry tersimpan di file `sites.ini` terpisah.
-- Halaman ringkasan agregat: jumlah site normal, warning, error, offline, dan tabel bermasalah.
-- Kartu status per site dengan alamat master → backup, heartbeat, siklus, dan jumlah tabel.
-- Indikator **Mode darurat**, arah replikasi (`master → backup` / `backup → master`), dan versi agent di kartu site serta halaman Config.
-- Pemilih site di header; halaman tabel, kejadian, siklus, dan diagnostik mengikuti site terpilih.
-- Mode **Semua site** untuk melihat tabel, kejadian, dan siklus gabungan.
-- Koneksi PDO di-cache per host/user sehingga banyak site yang memakai database status pusat hanya membuka satu koneksi.
-- Deteksi koneksi database terputus, autentikasi gagal, heartbeat basi, dan agent yang belum pernah berjalan.
-- Basic Auth, security header, masking password, serta proteksi file konfigurasi.
+- Tambah, edit, dan hapus site dari halaman utama dengan kredensial `repl_agent` per-site.
+- Status agent, heartbeat, tabel berhasil/error, dan ukuran database master/backup.
+- Polling berkala dan tema terang/gelap.
+- Tanpa login; batasi akses dashboard ke jaringan tepercaya.
 - Tidak membutuhkan framework, Composer, atau build frontend.
 
 ---
@@ -105,51 +94,15 @@ Setiap site menyimpan statusnya sendiri di database backup. Dashboard membuka ko
    └─────────────────────────────────────────────────────────────┘
 ```
 
-### Mode status pusat
-
-Data aplikasi tetap disalin ke backup masing-masing site. Hanya status/heartbeat yang dikirim agent ke satu MySQL pusat, dengan schema berbeda per site.
-
-```text
-   Site Jakarta        Site Bandung             Dashboard
-   agent → _rep_jakarta  agent → _rep_bandung   membaca semua schema
-        │                     │                       │
-        └──────────┬──────────┘                       │
-                   ▼                                  │
-          ┌──────────────────┐    SELECT              │
-          │ MySQL status     │ ◄─────────────────────┘
-          │ pusat            │
-          │ _rep_jakarta     │
-          │ _rep_bandung     │
-          │ _rep_surabaya    │
-          └──────────────────┘
-```
-
-Mode pusat lebih nyaman untuk banyak site karena dashboard hanya membuka satu koneksi database. Syaratnya, setiap agent memakai `status.schema` yang unik.
-
 ### Cara dashboard membaca status setiap site
 
-Agent di tiap site menulis **heartbeat dan hasil replikasi** ke schema status
-MySQL (`_rep_<site>`), bukan mengirim data ke dashboard melalui HTTP. Saat
-halaman dashboard diminta atau di-*refresh*, PHP membaca daftar site dari
-`dashboard.ini` dan `sites.ini` (di Docker: `deploy/docker/config/`), lalu menggunakan **PDO MySQL dengan
-akun read-only (`SELECT`)** untuk membaca tabel `agent`, `table_status`,
-`event`, dan `cycle` pada schema status masing-masing site. Dashboard **tidak
-membaca tabel transaksi aplikasi** dan tidak memerlukan koneksi ke MySQL master.
+Agent menulis heartbeat dan hasil replikasi ke schema status MySQL pada backup.
+Dashboard membaca tabel `agent` pada setiap backup dan mengukur ukuran database
+aplikasi master serta backup melalui `information_schema`.
 
-- **Mode langsung:** dashboard menghubungi MySQL backup tiap site melalui
-  `backup_host` dan port statusnya. Mesin/container dashboard harus bisa
-  menjangkau backup tiap site melalui LAN/VPN.
-- **Mode pusat:** tiap agent menulis status ke schema unik pada satu MySQL
-  pusat; dashboard membaca schema tersebut melalui `[dashboard] db_host` dan
-  `db_port`. Koneksi ke host yang sama dipakai ulang dalam satu request PHP.
-
-Status online/offline dihitung dari `heartbeat_at`: jika lebih lama dari
-`stale_after_sec` (default 120 detik), site dianggap tidak aktif. Halaman
-memuat ulang sesuai `refresh_sec` (default 15 detik); ini **polling**, bukan
-WebSocket atau push real-time. Bila suatu database status tidak terjangkau,
-site tersebut ditampilkan sebagai tidak terhubung tanpa menghentikan tampilan
-site lain. Lihat juga [konfigurasi mode status](#mode-status-langsung-atau-pusat)
-dan [panduan Docker](docs/DEPLOY-DASHBOARD-DOCKER.md).
+Status online/offline dihitung dari heartbeat agent yang tersimpan pada schema
+status backup. Dashboard membaca ukuran database master dan backup secara
+langsung melalui `information_schema`.
 
 ---
 
@@ -176,31 +129,20 @@ replicator/
 │  └─ build.rs                    # Menyematkan agent + versinya
 ├─ dashboard/                     # Document root PHP (tanpa config)
 │  ├─ index.php
-│  ├─ lib/
-│  │  ├─ auth.php
-│  │  ├─ config.php               # Parser INI + registry [site:*]
-│  │  ├─ db.php                   # PDO cache + query multi-site
-│  │  ├─ sites.php                # Tambah/hapus site + CSRF
-│  │  └─ util.php
-│  ├─ pages/                      # overview, tables, events, cycles, sites, config
-│  └─ assets/
+│  ├─ api.php                     # JSON API, site registry, status polling
+│  └─ assets/                     # Swiss editorial UI + polling client
 ├─ config/
 │  ├─ agent.example.ini           # Template environment agent
-│  ├─ dashboard.example.ini       # Template environment dashboard
-│  └─ sites.ini                   # Dibuat otomatis dari halaman Site
-├─ deploy/podman/                 # Dashboard produksi dengan Podman
-├─ deploy/docker/                 # Dashboard produksi dengan Docker Compose
+│  └─ sites.ini                   # Lokal; kredensial per-site (diabaikan Git)
 ├─ docs/
 │  ├─ DEPLOY-AGENT.md             # Tutorial deploy agent + mode darurat
 │  ├─ DEPLOY-DASHBOARD.md         # Tutorial deploy dashboard
-│  ├─ DEPLOY-DASHBOARD-DOCKER.md  # Deploy dashboard PHP dengan Docker
 │  └─ UPDATE-AGENT.md             # Update, rollback, dan versioning agent
 ├─ scripts/
 │  ├─ build-agent.ps1
 │  ├─ build-installer.ps1         # Build agent + installer ke dist\ + VERSIONS.txt
 │  ├─ install-task.ps1
-│  ├─ uninstall-task.ps1
-│  └─ serve-dashboard.ps1
+│  └─ uninstall-task.ps1
 ├─ installer/target/               # Hasil build installer (dilacak di git)
 ├─ dist/                           # Binary rilis + manifest hash (dilacak di git)
 ├─ sql/                           # Grant MySQL 5.x
@@ -208,7 +150,7 @@ replicator/
 └─ README.md
 ```
 
-> **Penting:** document root web harus menunjuk ke folder `dashboard/`, bukan root repositori. File konfigurasi berada di luar document root.
+> Buka dashboard pada jaringan terpercaya saja: dashboard sengaja tidak memiliki login.
 
 ---
 
@@ -224,10 +166,9 @@ replicator/
 
 ### Dashboard
 
-- PHP 7.4 atau lebih baru dengan ekstensi `pdo_mysql`.
-- Apache 2.4, IIS dengan FastCGI, atau web server lain yang mendukung PHP.
-- Akses jaringan ke database status tiap site, atau ke database status pusat.
-- User MySQL **read-only** untuk dashboard.
+- PHP 8+ dengan ekstensi `pdo_mysql`.
+- Akses jaringan ke MySQL master dan backup setiap site.
+- Kredensial MySQL `repl_agent` per-site.
 
 ### Pengembangan agent
 
@@ -289,47 +230,15 @@ Pemasangan tanpa tampilan:
 
 Panduan lengkap: [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md).
 
-### 2. Siapkan environment dashboard
+### 2. Jalankan dashboard
 
-```powershell
-Copy-Item config\dashboard.example.ini config\dashboard.ini
-notepad config\dashboard.ini
+```sh
+php -S 127.0.0.1:8089 -t dashboard
 ```
 
-Isi minimal:
-
-```ini
-[dashboard]
-basic_auth = "true"
-username = "admin"
-password = "GANTI_PASSWORD_DASHBOARD"
-db_user = "repl_dashboard"
-db_password = "GANTI_PASSWORD_DASHBOARD_DB"
-allow_site_management = "true"
-sites_file = "sites.ini"
-```
-
-Tidak ada section `[site:*]` di config. Dashboard mulai tanpa site; daftar site
-disimpan di `config\sites.ini` agar config utama tidak tertimpa.
-
-### 3. Jalankan dashboard dan tambahkan site
-
-```powershell
-.\scripts\serve-dashboard.ps1 -Port 8080
-```
-
-Buka `http://localhost:8080/`, masuk ke menu **Site**, lalu isi:
-
-| Field | Contoh |
-|---|---|
-| Nama site | `Jakarta` |
-| IP master | `192.168.101.11` |
-| IP slave / backup | `192.168.101.12` |
-
-Dashboard menentukan nama schema `_rep_jakarta` secara otomatis. Installer
-memakai aturan yang sama; pastikan schema di config agent
-(`D:\replicator\config\agent.ini`) sama dengan yang tampil di halaman
-Site. Untuk produksi, gunakan Apache/IIS dan HTTPS; lihat
+Buka `http://127.0.0.1:8089/`, lalu tambahkan site. Masukkan host, port, nama
+database, schema status yang sama dengan agent, dan password `repl_agent`.
+Registry tersimpan di `config/sites.ini`. Lihat
 [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
 
 ### 4. Pantau agent dari ikon tray
@@ -368,12 +277,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
     ON `_rep%`.* TO 'repl_agent'@'%';
 
--- Dashboard: hanya membaca schema status
-GRANT SELECT ON `_rep%`.* TO 'repl_dashboard'@'%'
-    IDENTIFIED BY 'GANTI_PASSWORD_DASHBOARD_DB';
+-- Dashboard memakai kredensial repl_agent yang sama dengan agent.
 ```
 
-File lengkap ada di [`sql/master_user.sql`](sql/master_user.sql), [`sql/backup_user.sql`](sql/backup_user.sql), dan [`sql/dashboard_user.sql`](sql/dashboard_user.sql).
+File grant agent ada di [`sql/master_user.sql`](sql/master_user.sql) dan [`sql/backup_user.sql`](sql/backup_user.sql).
 
 Salin template config lalu isi minimal:
 
@@ -429,23 +336,22 @@ Panduan langkah demi langkah (Bahasa Indonesia) untuk mesin produksi:
 |---|---|
 | [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Installer satu file, port MySQL kustom, pembuatan user/grant otomatis, ikon tray + monitor, mode darurat (failback), uji `--check`/`--once`, pemasangan manual, autostart/Scheduled Task, update/uninstall/rollback, troubleshooting. |
 | [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md) | Update agent lewat installer atau binary saja, pemeriksaan versi, update grant failback, rollback, dan riwayat versi. |
-| [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | PHP + `pdo_mysql`, mode status langsung/pusat, grant read-only, config `dashboard.ini`, IIS/Apache/nginx, izin tulis `sites.ini`, tambah site, keamanan, troubleshooting. |
-| [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md) | Docker Compose untuk dashboard PHP, konfigurasi persisten di luar document root, akses MySQL site/pusat, update dan backup. |
+| [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | Dashboard PHP baru, pengelolaan site, kredensial `repl_agent`, dan deployment tanpa container. |
 
 Ringkasnya: **agent dipasang di tiap site** (Windows 7–11) dan **dashboard cukup
 satu instance** di lokasi yang bisa menjangkau database status semua site.
 
 ---
 
-## Dua environment: agent dan dashboard
+## Agent dan dashboard
 
-Agent dan dashboard sekarang memakai file konfigurasi terpisah. Ini mencegah kredensial dashboard ikut terbawa ke mesin agent, dan sebaliknya.
+Agent memakai config-nya sendiri. Dashboard menyimpan daftar site dan password MySQL per-site di registry lokal.
 
 | Environment | Template | File aktif | Dibaca oleh |
 |---|---|---|---|
 | Agent (installer) | dibuat installer | `D:\replicator\config\agent.ini` | `replicator-agent.exe` |
 | Agent (manual) | `config/agent.example.ini` | `config/agent.ini` | `replicator-agent.exe` |
-| Dashboard | `config/dashboard.example.ini` | `config/dashboard.ini` | PHP dashboard |
+| Dashboard | `config/sites.ini` (dibuat dari UI, lokal) | `config/sites.ini` | PHP dashboard |
 | Lama (single-site) | `config.example.ini` | `config.ini` | Keduanya (fallback) |
 
 ### Urutan pencarian config agent
@@ -458,250 +364,18 @@ Agent dan dashboard sekarang memakai file konfigurasi terpisah. Ini mencegah kre
 6. `config.ini` di folder `replicator-agent.exe`.
 7. `config\agent.ini` / `config.ini` satu level di atas folder exe (misalnya `dist\..\config\agent.ini`).
 
-### Urutan pencarian config dashboard
-
-1. Environment variable `REPLICATOR_DASHBOARD_CONFIG`.
-2. Environment variable `REPLICATOR_CONFIG`.
-3. `config/dashboard.ini` di root proyek.
-4. `dashboard/config/dashboard.ini`.
-5. `dashboard/config.ini`.
-6. `config.ini` lama di root proyek.
-7. `config.ini` satu level di atas root proyek.
-
-Contoh IIS/Apache dapat mengarahkan environment variable ke lokasi aman di luar document root:
-
-```powershell
-$env:REPLICATOR_DASHBOARD_CONFIG = "D:\replicator-config\dashboard.ini"
-```
-
-### Kompatibilitas config lama
-
-Bila config **tidak** memiliki key `[dashboard] sites_file`, dashboard berperilaku
-seperti versi single-site lama: tanpa `[site:*]` ia membuat satu site **Site
-utama** dari `[master]`, `[backup]`, dan `[dashboard]`. Bila `sites_file` ada
-(walau kosong), dashboard memakai registry dan boleh mulai dengan nol site.
+Dashboard tidak lagi membaca konfigurasi dashboard lama. Site dikelola dari UI
+dan disimpan di `config/sites.ini`.
 
 ---
 
-## Dashboard multi-site
+## Dashboard site registry
 
-Site ditambahkan lewat halaman **Site** di dashboard. Setiap site disimpan sebagai
-section `[site:<id>]` di file yang ditunjuk `[dashboard] sites_file`, misalnya:
-
-```ini
-[site:jakarta]
-name = "Jakarta"
-master_host = "192.168.101.11"
-backup_host = "192.168.101.12"
-status_schema = "_rep_jakarta"
-```
-
-Section `[site:<id>]` juga masih boleh ditulis manual di `dashboard.ini`. Site
-seperti itu tetap tampil, tetapi **tidak bisa dihapus** lewat tombol agar config
-utama tidak tertimpa.
-
-Field opsional yang bisa dipakai site manual:
-
-```ini
-[site:jakarta]
-name = "Jakarta"
-master_host = "192.168.101.11"
-backup_host = "192.168.101.12"
-
-; Opsional. Kosong = ikuti [dashboard] db_host, lalu backup_host.
-db_host = ""
-db_port = 3306
-db_user = ""
-db_password = ""
-
-; Schema tempat agent menulis status.
-status_schema = "_rep_jakarta"
-
-; Opsional, informasi untuk operator.
-site_key = "jkt-01"
-```
-
-Aturan ID site:
-
-- Huruf kecil, angka, `_`, dan `-`.
-- Maksimal 32 karakter.
-- Harus unik.
-- Contoh valid: `jakarta`, `site-01`, `jkt_barat`.
-
-Field yang tersedia:
-
-| Key | Wajib | Keterangan |
-|---|---|---|
-| `name` | tidak | Nama tampilan. Default: ID site. |
-| `master_host` | tidak | Alamat VPN master untuk ditampilkan. |
-| `backup_host` | tidak | Alamat VPN backup; dipakai sebagai host status bila `db_host` kosong. |
-| `db_host` | tidak | Host MySQL status khusus site ini. |
-| `db_port` | tidak | Default 3306 atau mengikuti `[dashboard] db_port`. |
-| `db_user` | tidak | Default mengikuti `[dashboard] db_user`. |
-| `db_password` | tidak | Default mengikuti `[dashboard] db_password`. |
-| `status_schema` | tidak | Default `_rep_<id>` (misalnya `_rep_jakarta`) untuk site dari halaman Site. Gunakan unik untuk mode pusat. |
-| `site_key` | tidak | Kunci/informasi tambahan. |
-
-### Halaman dashboard
-
-| Halaman | Mode semua site | Mode site terpilih |
-|---|---|---|
-| **Ringkasan** | KPI fleet, kartu semua site, tabel bermasalah, kejadian dan siklus gabungan | KPI, tabel bermasalah, kejadian, grafik siklus site tersebut |
-| **Tabel** | Semua tabel dari semua site + kolom Site | Tabel site terpilih |
-| **Kejadian** | Gabungan, diurutkan waktu, dengan filter level | Kejadian site terpilih |
-| **Siklus** | Gabungan semua site | Riwayat siklus site terpilih |
-| **Diagnostik** | Matriks koneksi semua site, config tersamarkan | Detail agent + koneksi site terpilih |
-
-Pemilih site ada di header. Pilihan site dipertahankan saat berpindah halaman.
-
-### Skenario jaringan
-
-Dashboard hanya membutuhkan akses ke **database status**. Bila dashboard tidak bisa menjangkau backup site, gunakan mode status pusat:
-
-1. Agent di tiap site menulis ke MySQL pusat.
-2. Dashboard hanya membuka koneksi ke MySQL pusat.
-3. Tidak perlu membuka port MySQL backup ke dashboard.
-
----
-
-## Kelola site dari dashboard
-
-Buka menu **Site** (`?p=sites`). Form utama hanya meminta:
-
-| Field | Wajib | Keterangan |
-|---|---|---|
-| Nama site | tidak | Menjadi ID dan schema default. `Jakarta` → `jakarta` → `_rep_jakarta`. Kosong = ID dari IP master. |
-| IP master | ya | Alamat VPN master, ditampilkan di dashboard. |
-| IP slave / backup | ya | Alamat VPN backup, dipakai dashboard untuk membaca schema status. |
-
-Opsi lanjutan:
-
-- **Schema status** — kosongkan untuk otomatis `_rep_<id>`.
-- **Port MySQL** — kosongkan untuk mengikuti `[dashboard] db_port`.
-
-Aturan validasi:
-
-- IP harus IPv4 valid dan tidak boleh sama antara master dan slave.
-- Satu IP tidak boleh dipakai dua site.
-- ID site unik, huruf kecil/angka/`_`/`-`, maksimal 32 karakter.
-- Nama site maksimal 80 karakter.
-
-Site dari halaman ini punya tombol **Hapus**. Yang dihapus hanya entri registry;
-schema database tidak ikut dihapus. Site manual di `dashboard.ini` tidak punya
-tombol hapus.
-
-### File registry
-
-```ini
-[dashboard]
-allow_site_management = "true"
-sites_file = "sites.ini"
-```
-
-- Path relatif dihitung dari folder `dashboard.ini`.
-- File dibuat otomatis saat site pertama ditambahkan.
-- Folder harus bisa ditulis user web server (IIS AppPool, `www-data`, dll.).
-- Set `allow_site_management = "false"` untuk menjadikan dashboard read-only.
-- Form memakai token CSRF; sesi PHP harus aktif dan cookie diizinkan browser.
-
-### Sinkronisasi dengan agent
-
-Setelah site ditambahkan, dashboard menampilkan potongan config agent:
-
-```ini
-[master]
-host = "192.168.101.11"
-
-[backup]
-host = "192.168.101.12"
-
-[status]
-schema = "_rep_jakarta"
-```
-
-Nilai `[status] schema` **wajib sama** dengan `status_schema` di dashboard. Bila
-berbeda, site akan tampil offline meskipun agent berjalan.
-
----
-
-## Mode status: langsung atau pusat
-
-### A. Status langsung (default)
-
-Agent menulis ke server `[backup]`. Nama schema mengikuti `[status] schema` dan
-harus sama dengan `status_schema` site di dashboard.
-
-```ini
-# config/agent.ini — site Jakarta
-[status]
-schema = "_rep_jakarta"
-# host/port/user/password kosong = ikuti [backup]
-```
-
-Dashboard (dibuat otomatis lewat halaman Site):
-
-```ini
-[dashboard]
-db_user = "repl_dashboard"
-db_password = "GANTI_PASSWORD_DASHBOARD_DB"
-db_host = ""
-
-[site:jakarta]
-master_host = "192.168.101.11"
-backup_host = "192.168.101.12"
-status_schema = "_rep_jakarta"
-```
-
-Karena setiap site punya database sendiri, Anda juga boleh memakai schema `_rep`
-untuk semua site: isi **Schema status** = `_rep` pada opsi lanjutan saat
-menambahkan site, lalu samakan dengan `[status] schema` di agent.
-
-### B. Status pusat
-
-Agent menulis status ke MySQL pusat. Data aplikasi tetap ke `[backup]`.
-
-```ini
-# config/agent.ini — site Jakarta
-[status]
-schema = "_rep_jakarta"
-host = "10.10.10.5"
-port = 3306
-user = "repl_agent_status"
-password = "GANTI_PASSWORD_STATUS"
-```
-
-```ini
-# config/agent.ini — site Bandung
-[status]
-schema = "_rep_bandung"
-host = "10.10.10.5"
-port = 3306
-user = "repl_agent_status"
-password = "GANTI_PASSWORD_STATUS"
-```
-
-Dashboard:
-
-```ini
-[dashboard]
-db_host = "10.10.10.5"
-db_port = 3306
-db_user = "repl_dashboard"
-db_password = "GANTI_PASSWORD_DASHBOARD_DB"
-```
-
-Site `jakarta` dan `bandung` ditambahkan lewat halaman Site. Dashboard mengisi
-`status_schema` masing-masing dengan `_rep_jakarta` dan `_rep_bandung` otomatis.
-
-Catatan:
-
-- `status.schema` **wajib unik** per site pada database pusat.
-- `[status] host`, `port`, dan `user` yang kosong akan mengikuti `[backup]`.
-  Password hanya diwarisi bila `user`-nya juga sama; bila user diganti, isi
-  `[status] password` sendiri.
-- Grant agent pada database pusat: DDL/DML pada `_rep%`.*.
-- Grant dashboard: SELECT pada `_rep%`.*.
-- `--check` akan menguji database status pusat dan membuat schema/tabel bila belum ada.
+Tambahkan site pada halaman utama. Setiap entri berisi host master/backup,
+port, schema status, nama database aplikasi, dan password `repl_agent`.
+Password tersimpan per-site di `config/sites.ini`; nama user `repl_agent`
+tetap. Schema wajib sama dengan `[status] schema` pada agent. Penghapusan dari
+dashboard hanya menghapus entri registry, bukan data MySQL.
 
 ---
 
@@ -816,7 +490,7 @@ Panduan lengkap ada di [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md#61-mode-dar
 ## Menjalankan agent
 
 ```powershell
-# Cek config dan koneksi master, backup, serta status pusat
+# Cek config dan koneksi master serta backup
 .\replicator-agent.exe --check --config .\config\agent.ini
 
 # Satu siklus lalu keluar
@@ -965,168 +639,40 @@ Build MSVC:
 
 ## Deploy dashboard
 
-Panduan lengkap: [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
-Untuk container: [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md)
-(Docker) atau [`docs/DEPLOY-DASHBOARD-PODMAN.md`](docs/DEPLOY-DASHBOARD-PODMAN.md)
-(Podman).
-Salin `deploy/docker/.env.example` menjadi `deploy/docker/.env` dan ubah
-`DASHBOARD_PORT` (misalnya `8090`) untuk memilih port host; jalankan Compose
-dengan `--env-file deploy/docker/.env` seperti di panduan.
-
-### Apache (Windows/Linux)
-
-1. Set document root ke folder `dashboard/`.
-2. Aktifkan `mod_rewrite` bila memakai `.htaccess` (opsional).
-3. Pastikan `config/dashboard.ini` berada **di luar** document root.
-4. Beri izin tulis folder `config/` kepada user web server agar `sites.ini` bisa dibuat.
-5. Aktifkan HTTPS.
-6. Lindungi dashboard dengan Basic Auth (bawaan aplikasi) atau autentikasi web server.
-
-Contoh VirtualHost Apache:
-
-```apache
-<VirtualHost *:443>
-    ServerName monitoring.example.internal
-    DocumentRoot "D:/replicator/dashboard"
-
-    SSLEngine on
-    SSLCertificateFile      "C:/certs/monitoring.crt"
-    SSLCertificateKeyFile   "C:/certs/monitoring.key"
-
-    <Directory "D:/replicator/dashboard">
-        Options -Indexes
-        AllowOverride All
-        Require all granted
-    </Directory>
-
-    SetEnv REPLICATOR_DASHBOARD_CONFIG "D:/replicator/config/dashboard.ini"
-</VirtualHost>
-```
-
-### IIS
-
-1. Pasang PHP FastCGI dan `pdo_mysql`.
-2. Buat site dengan physical path `dashboard\`.
-3. Beri hak **Modify** pada folder `config\` untuk identity application pool.
-4. Pastikan `web.config` di folder dashboard dipertahankan.
-5. Blokir akses `.ini`, `.log`, dan file di luar `index.php` bila perlu.
-6. Gunakan HTTPS binding.
-
-### PHP built-in server (uji coba)
-
-```powershell
-.\scripts\serve-dashboard.ps1 -Port 8080
-```
-
-Web server bawaan PHP hanya untuk pengujian/internal kecil, bukan produksi.
-
-### Environment variable
-
-Dashboard membaca `REPLICATOR_DASHBOARD_CONFIG` lebih dulu. Ini memudahkan menaruh config di lokasi aman:
-
-```powershell
-$env:REPLICATOR_DASHBOARD_CONFIG = "D:\secrets\replicator-dashboard.ini"
-```
-
-Untuk IIS/Apache, set environment variable pada service, bukan hanya di sesi PowerShell.
-
----
-
-## Deploy dashboard dengan Podman
-
-Panduan lengkap: [`docs/DEPLOY-DASHBOARD-PODMAN.md`](docs/DEPLOY-DASHBOARD-PODMAN.md).
-
-Siapkan config di folder yang tidak di-commit:
+Dashboard berjalan sebagai aplikasi PHP tanpa database sendiri atau autentikasi.
+Siapkan PHP 8+ dengan `pdo_mysql`, pastikan host dapat
+mengakses MySQL master dan backup, lalu jalankan dari root repo:
 
 ```sh
-mkdir -p deploy/podman/config
-cp config/dashboard.example.ini deploy/podman/config/dashboard.ini
-cp deploy/podman/.env.example deploy/podman/.env
-# edit dashboard.ini (password + koneksi MySQL) dan .env (port/bind)
+php -S 127.0.0.1:8089 -t dashboard
 ```
 
-Jalankan dengan Compose:
-
-```sh
-podman compose --env-file deploy/podman/.env -f deploy/podman/compose.yaml up -d --build
-```
-
-Bila provider Compose belum tersedia, jalankan manual:
-
-```sh
-podman build -t replicator-dashboard:local -f deploy/podman/Containerfile .
-podman run -d --name replicator-dashboard \
-  -p 127.0.0.1:8089:80 \
-  -v "$PWD/deploy/podman/config:/var/www/config:Z" \
-  -e REPLICATOR_DASHBOARD_CONFIG=/var/www/config/dashboard.ini \
-  replicator-dashboard:local
-```
-
-Buka `http://localhost:8089/` (sesuai `DASHBOARD_PORT`). Tambahkan site lewat
-menu **Site**; registry disimpan di `deploy/podman/config/sites.ini` dan tetap
-ada saat container dibuat ulang. Pada Podman rootless, jalankan
-`podman unshare chown -R 33:33 deploy/podman/config` agar halaman Site bisa
-menulis registry.
-
----
+Buka `http://127.0.0.1:8089/`. Tambahkan site dari halaman utama; registry dan
+password MySQL per-site tersimpan di `config/sites.ini` (diabaikan Git). Gunakan
+user `repl_agent` yang sama dengan agent. Untuk akses jaringan, gunakan HTTPS
+dan VPN/proxy terpercaya karena dashboard tidak memiliki login.
 
 ## Grant MySQL
 
-Pada pemasangan normal, installer membuat user, grant, database backup, dan
-schema status otomatis. Bagian ini dipakai untuk pemasangan manual atau bila
-ingin membuat grant sendiri.
-
-### MySQL 5.0–5.7
-
-Gunakan sintaks `GRANT ... IDENTIFIED BY` seperti pada file `sql/*.sql`.
-
-### MySQL 8
-
-Buat user lebih dulu, lalu grant:
-
-```sql
-CREATE USER 'repl_dashboard'@'%' IDENTIFIED BY 'GANTI_PASSWORD_DASHBOARD_DB';
-GRANT SELECT ON `_rep%`.* TO 'repl_dashboard'@'%';
-```
-
-### Hak minimum
-
-| User | Master | Backup | Database status pusat |
-|---|---|---|---|
-| `repl_agent` | SELECT + SHOW VIEW pada `appdb`; tambah DML + DDL bila mode darurat aktif | DML + DDL pada `appdb` dan `_rep%` | DML + DDL pada `_rep%` |
-| `repl_dashboard` | — | SELECT pada `_rep%` | SELECT pada `_rep%` |
-
-Agent tidak membutuhkan `SUPER`, `PROCESS`, `FILE`, atau `GRANT OPTION`.
-Installer memberi hak tulis master otomatis saat opsi mode darurat dicentang
-(bisa dilewati dengan `--no-failback`).
+Installer membuat user `repl_agent` dan grant yang diperlukan. Dashboard
+menggunakan kredensial per-site yang sama untuk membaca schema status dan ukuran
+database melalui `information_schema`.
 
 ---
 
 ## Keamanan
 
-- Ganti semua nilai `GANTI_...` sebelum menjalankan.
-- Jangan menaruh `config/agent.ini` atau `config/dashboard.ini` di document root.
+- Jangan menaruh `config/agent.ini` atau `config/sites.ini` di document root.
 - Document root harus folder `dashboard/`, bukan root repositori.
 - Gunakan HTTPS atau akses dashboard hanya lewat VPN.
-- Aktifkan `[dashboard] basic_auth = "true"`.
-- Gunakan user MySQL read-only untuk dashboard.
-- Batasi host pada grant (`'repl_dashboard'@'10.10.10.%'`), jangan biarkan `%` bila tidak perlu.
+- Dashboard tanpa login: batasi akses ke VPN/jaringan terpercaya dan gunakan HTTPS untuk akses jaringan.
+- Kredensial repl_agent per-site disimpan di `config/sites.ini`; batasi permission file tersebut.
 - Ganti password bila file config pernah tersalin ke mesin lain.
 - Dashboard tidak menyediakan tombol tulis; force full dilakukan manual lewat SQL.
-- File `.htaccess`/`web.config` membantu, tetapi bukan pengganti konfigurasi web server yang benar.
 
 ---
 
 ## Troubleshooting
-
-### `Konfigurasi dashboard tidak ditemukan`
-
-Letakkan file di `config/dashboard.ini` atau set `REPLICATOR_DASHBOARD_CONFIG`.
-
-```powershell
-Test-Path .\config\dashboard.ini
-$env:REPLICATOR_DASHBOARD_CONFIG = (Resolve-Path .\config\dashboard.ini)
-```
 
 ### `config agent ... tidak bisa membaca`
 
@@ -1155,11 +701,10 @@ instalasi installer, file ada di
 Stop berlaku setelah siklus yang sedang berjalan selesai, supaya data tidak
 setengah tertulis. Tunggu satu siklus atau lihat progres di monitor.
 
-### `SQLSTATE[HY000] [1045] Access denied`
+### Dashboard gagal terhubung ke MySQL
 
-- Periksa user/password di `[dashboard]` atau `[site:*]`.
-- Periksa host grant. Koneksi dari mesin dashboard harus diizinkan.
-- Untuk mode pusat, pastikan `db_host` menunjuk server yang benar.
+- Periksa user/password `repl_agent` pada entri site.
+- Pastikan host dashboard diizinkan oleh grant MySQL dan jaringan dapat mencapai master serta backup.
 
 ### `Schema _rep... belum lengkap`
 
@@ -1176,7 +721,7 @@ Atau periksa `status_schema` di dashboard sama dengan `[status] schema` di agent
 - Agent mati, hang, atau tidak bisa menulis ke database status.
 - Jaringan VPN putus.
 - Waktu server tidak sinkron.
-- Periksa log agent dan `[dashboard] stale_after_sec`.
+- Periksa log agent dan pastikan heartbeat berumur kurang dari 120 detik.
 
 ### `pdo_mysql` tidak aktif
 
@@ -1201,10 +746,6 @@ Buka halaman **Tabel** dan lihat kolom Keterangan. Penyebab umum:
 ### Tabel tanpa kunci selalu `idle`
 
 Ini normal. Tabel tanpa primary key/unique key hanya diverifikasi berkala. Tambahkan primary key bila memungkinkan.
-
-### Agent `--check` gagal di status pusat
-
-Pastikan user status punya hak membuat schema `_rep_<site>` dan tabel di database pusat, serta `status.schema` unik.
 
 ### Mode darurat gagal dengan `Access denied`
 
@@ -1232,31 +773,26 @@ File `config\failback.armed` tersisa dari sesi sebelumnya. Matikan lewat tray
 - Deteksi DELETE bergantung pada verifikasi checksum berkala; bukan real-time.
 - Tabel tanpa primary key/unique key tidak dapat di-upsert secara inkremental.
 - Perubahan struktur yang kompleks (rename kolom, perubahan tipe) dapat memerlukan full load/recreate.
-- Dashboard tidak melakukan auto-discovery site; registry diisi manual di `[site:*]`.
-- Dashboard membaca status secara langsung. Bila banyak site hanya bisa diakses lewat VPN lambat, mode status pusat lebih disarankan.
+- Dashboard tidak melakukan auto-discovery site; tambahkan setiap site melalui halaman utama.
 - Binary agent harus dibangun untuk arsitektur Windows yang dituju.
 
 ---
 
 ## Checklist produksi
 
-- [ ] Password semua database dan dashboard sudah diganti.
-- [ ] `basic_auth = "true"` dan HTTPS aktif.
+- [ ] Kredensial `repl_agent` per-site dibatasi dan registry lokal dilindungi.
 - [ ] Document root menunjuk ke `dashboard/`.
-- [ ] `config/dashboard.ini` berada di luar document root.
 - [ ] Installer dijalankan dan `install.log` tidak berisi `GAGAL`.
 - [ ] Port MySQL master dan backup benar (default `3306`, boleh kustom).
-- [ ] Grant dashboard hanya SELECT pada `_rep%`.
 - [ ] Grant agent dibatasi ke host/IP yang benar.
-- [ ] `status_schema` unik untuk setiap site (mode pusat).
 - [ ] Mode darurat diuji (arm → master hidup → replikasi balik → normal).
 - [ ] Grant tulis master hanya aktif bila mode darurat memang dipakai.
 - [ ] Ikon tray muncul dan monitor replikasi menampilkan progres.
 - [ ] Agent berjalan otomatis (autostart per-user atau Scheduled Task), tidak keduanya.
-- [ ] NTP aktif di master, backup, dan server status.
+- [ ] NTP aktif di master dan backup.
 - [ ] Notifikasi eksternal diuji.
 - [ ] Dashboard diuji dari jaringan VPN yang sama dengan operator.
-- [ ] Backup database status dan database aplikasi dijadwalkan.
+- [ ] Backup database aplikasi dijadwalkan.
 - [ ] Log agent dipantau dan dibersihkan berkala.
 
 ---

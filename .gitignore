@@ -19,14 +19,12 @@ logs/
 # Konfigurasi lokal berisi kredensial (gunakan template di config/)
 config.ini
 config/agent.ini
-config/dashboard.ini
+config/sites.ini
+deploy/podman/.env
 dashboard/config.ini
 
-# Data runtime Podman
-deploy/podman/.env
-deploy/podman/config/
-deploy/docker/config/
-deploy/docker/.env
+# Data runtime dashboard
+config/sites.ini
 
 # Editor / OS
 .vscode/

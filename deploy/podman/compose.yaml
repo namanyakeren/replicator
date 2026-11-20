@@ -1,21 +1,14 @@
-# Dashboard Replicator dengan Podman.
-# Jalankan dari root repo:
-#   podman compose --env-file deploy/podman/.env -f deploy/podman/compose.yaml up -d --build
-# Config dan registry site disimpan di deploy/podman/config/ (tidak di-commit).
-name: replicator-dashboard
-
 services:
   dashboard:
     build:
       context: ../..
       dockerfile: deploy/podman/Containerfile
-    image: replicator-dashboard:local
-    restart: unless-stopped
+    container_name: replicator-dashboard
     ports:
-      # Atur DASHBOARD_PORT dan DASHBOARD_BIND di deploy/podman/.env.
-      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8089}:80"
+      - "127.0.0.1:${DASHBOARD_PORT:-8089}:80"
     volumes:
-      # Folder lokal menyimpan dashboard.ini (rahasia) dan sites.ini (ditulis PHP).
       - ./config:/var/www/config:Z
     environment:
-      REPLICATOR_DASHBOARD_CONFIG: /var/www/config/dashboard.ini
+      REPLICATOR_CONFIG_FILE: /var/www/replicator-config.php
+      REPLICATOR_SITES_FILE: /var/www/config/sites.ini
+    restart: unless-stopped

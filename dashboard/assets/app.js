@@ -1,244 +1,127 @@
-(function () {
-    'use strict';
+(() => {
+    const $ = (selector) => document.querySelector(selector);
+    const rows = $('#site-rows');
+    const dialog = $('#site-dialog');
+    const form = $('#site-form');
+    let sites = [];
 
-    var body = document.body;
-    var interval = parseInt(document.documentElement.getAttribute('data-refresh') || '0', 10);
-    var note = document.getElementById('refreshNote');
-    var pauseButton = document.getElementById('pauseToggle');
-    var paused = false;
-    var deadline = 0;
-    var ticker = null;
-
-    var ICON_PAUSE = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg>';
-    var ICON_PLAY = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 4 13 8-13 8V4Z"/></svg>';
-
-    try {
-        paused = window.sessionStorage.getItem('rep_paused') === '1';
-    } catch (error) {
-        paused = false;
-    }
-
-    function storePaused(value) {
+    const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    const size = (bytes) => {
+        if (bytes === null || bytes === undefined) return 'Unavailable';
+        const units = ['B','KB','MB','GB','TB'];
+        let value = Number(bytes), unit = 0;
+        while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+        return `${value.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+    };
+    const ago = (stamp) => {
+        if (!stamp) return '—';
+        const seconds = Math.max(0, Math.floor((Date.now() - new Date(`${stamp.replace(' ', 'T')}Z`).getTime()) / 1000));
+        if (seconds < 60) return `${seconds}s ago`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return `${Math.floor(seconds / 86400)}d ago`;
+    };
+    const setBanner = (message) => { const banner = $('#status-banner'); banner.textContent = message || ''; banner.hidden = !message; };
+    const render = (payload) => {
+        sites = payload.sites || [];
+        $('#nav-count').textContent = sites.length;
+        $('#site-count').textContent = `(${sites.length})`;
+        const healthy = sites.filter(site => site.health === 'healthy').length;
+        const attention = sites.length - healthy;
+        const knownBytes = sites.reduce((sum, site) => sum + (site.master_bytes || 0) + (site.backup_bytes || 0), 0);
+        $('#metric-sites').textContent = sites.length;
+        $('#metric-healthy').textContent = healthy;
+        $('#metric-attention').textContent = attention;
+        $('#metric-size').textContent = size(knownBytes);
+        $('#last-updated').textContent = new Date(payload.updated_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        if (!sites.length) {
+            rows.innerHTML = '<tr><td colspan="6" class="empty">No sites registered. Add a site to begin monitoring.</td></tr>';
+            return;
+        }
+        rows.innerHTML = sites.map(site => `<tr>
+            <td><span class="site-name">${esc(site.name)}</span><span class="site-host">${esc(site.master_host)} → ${esc(site.backup_host)}</span></td>
+            <td><span class="health-tag health-${esc(site.health)}"><i></i>${esc(site.health)}</span><span class="health-detail" title="${esc(site.detail)}">${esc(site.detail)}</span>${site.warning_reason ? `<span class="health-detail reason" title="${esc(site.warning_reason)}">Cause: ${esc(site.warning_reason)}</span>` : ''}</td>
+            <td><span class="db-size">${size(site.master_bytes)}</span><span class="db-name">${esc(site.master_db || 'master')} · ${esc(site.master_host)}</span></td>
+            <td><span class="db-size">${size(site.backup_bytes)}</span><span class="db-name">${esc(site.backup_db || 'backup')} · ${esc(site.schema)}</span></td>
+            <td><span class="heartbeat">${ago(site.heartbeat_at)}</span></td>
+            <td><div class="row-actions"><button data-action="${esc(site.id)}" type="button" title="Diagnose connections and refresh status">Diagnose</button><button data-edit="${esc(site.id)}" type="button">Edit</button><button data-delete="${esc(site.id)}" type="button">Delete</button></div></td>
+        </tr>`).join('');
+    };
+    const refresh = async () => {
         try {
-            window.sessionStorage.setItem('rep_paused', value ? '1' : '0');
-        } catch (error) {
-            /* sessionStorage bisa diblokir; abaikan. */
+            const response = await fetch('api.php?action=status', {cache:'no-store'});
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Status request failed.');
+            setBanner(''); render(payload);
+        } catch (error) { setBanner(`Status refresh failed: ${error.message}`); }
+    };
+    const apiPost = async (action, body) => {
+        const response = await fetch(`api.php?action=${action}`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || 'Request failed.');
+        return result;
+    };
+    const openForm = (site = null) => {
+        form.reset();
+        $('#form-error').hidden = true;
+        $('#dialog-title').textContent = site ? 'Edit site' : 'Add a site';
+        form.elements.id.value = site?.id || '';
+        for (const key of ['name','master_host','backup_host','db_port','schema','master_db','backup_db','master_user']) {
+            if (site && form.elements[key]) form.elements[key].value = site[key] ?? '';
         }
-    }
-
-    function detailsOpen() {
-        return document.querySelector('details[open]') !== null;
-    }
-
-    function inputFocused() {
-        var element = document.activeElement;
-        if (!element) {
-            return false;
+        form.elements.db_port.value = site?.db_port || '3306';
+        form.elements.schema.value = site?.schema || '';
+        form.elements.db_password.required = !site;
+        form.elements.master_password.required = false;
+        form.elements.db_password.value = '';
+        form.elements.master_db.required = true;
+        form.elements.backup_db.required = true;
+        dialog.showModal();
+    };
+    $('#add-site').addEventListener('click', () => openForm());
+    $('#refresh-now').addEventListener('click', refresh);
+    $('.close-dialog').addEventListener('click', () => dialog.close());
+    $('#cancel-dialog').addEventListener('click', () => dialog.close());
+    $('#theme-toggle').addEventListener('click', () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = next; localStorage.setItem('replicator-theme', next);
+    });
+    const savedTheme = localStorage.getItem('replicator-theme');
+    if (savedTheme === 'dark' || savedTheme === 'light') document.documentElement.dataset.theme = savedTheme;
+    rows.addEventListener('click', async (event) => {
+        const edit = event.target.closest('[data-edit]');
+        const del = event.target.closest('[data-delete]');
+        if (edit) openForm(sites.find(site => site.id === edit.dataset.edit));
+        const action = event.target.closest('[data-action]');
+        if (action) {
+            action.disabled = true;
+            try {
+                const result = await apiPost('diagnose', {id:action.dataset.action});
+                const report = Object.entries(result.checks).map(([name, check]) => `${name}: ${check.ok ? 'OK' : check.message}`).join(' | ');
+                setBanner(`${sites.find(site => site.id === action.dataset.action)?.name || 'Site'} diagnosis: ${report}`);
+            } catch (error) { setBanner(error.message); }
+            await refresh();
+            action.disabled = false;
         }
-        var tag = (element.tagName || '').toLowerCase();
-        return tag === 'input' || tag === 'textarea' || tag === 'select';
-    }
-
-    function renderNote(text) {
-        if (note) {
-            note.textContent = text;
-        }
-    }
-
-    function schedule(seconds) {
-        deadline = Date.now() + Math.max(0, seconds) * 1000;
-    }
-
-    function updatePauseButton() {
-        if (!pauseButton) {
-            return;
-        }
-        pauseButton.innerHTML = paused ? ICON_PLAY : ICON_PAUSE;
-        pauseButton.setAttribute(
-            'aria-label',
-            paused ? 'Lanjutkan auto-refresh' : 'Jeda auto-refresh'
-        );
-        pauseButton.setAttribute('title', paused ? 'Lanjutkan auto-refresh' : 'Jeda auto-refresh');
-    }
-
-    function tick() {
-        if (paused) {
-            renderNote('auto-refresh dijeda');
-            return;
-        }
-        if (interval <= 0) {
-            return;
-        }
-
-        if (detailsOpen() || inputFocused()) {
-            schedule(Math.max(5, interval));
-            renderNote(detailsOpen() ? 'ditunda (detail terbuka)' : 'ditunda (sedang mengetik)');
-            return;
-        }
-
-        var left = Math.ceil((deadline - Date.now()) / 1000);
-        if (left <= 0) {
-            if (document.hidden) {
-                schedule(2);
-                return;
-            }
-            window.location.reload();
-            return;
-        }
-        renderNote('otomatis ' + left + ' dtk');
-    }
-
-    function start() {
-        if (!note || interval <= 0) {
-            return;
-        }
-        schedule(interval);
-        updatePauseButton();
-        ticker = window.setInterval(tick, 1000);
-        tick();
-    }
-
-    if (pauseButton && interval > 0) {
-        pauseButton.addEventListener('click', function () {
-            paused = !paused;
-            storePaused(paused);
-            updatePauseButton();
-            if (paused) {
-                renderNote('auto-refresh dijeda');
-            } else {
-                schedule(interval);
-                renderNote('otomatis ' + interval + ' dtk');
-            }
-        });
-    }
-
-    document.addEventListener('visibilitychange', function () {
-        if (!document.hidden && !paused && interval > 0 && Date.now() >= deadline) {
-            window.location.reload();
+        if (del && confirm(`Delete ${sites.find(site => site.id === del.dataset.delete)?.name || 'this site'} from the dashboard?`)) {
+            try { await apiPost('delete', {id:del.dataset.delete}); await refresh(); }
+            catch (error) { setBanner(error.message); }
         }
     });
-
-    if (ticker === null) {
-        start();
-    }
-
-    /* ---------- Navigasi mobile ---------- */
-
-    var navToggle = document.getElementById('navToggle');
-    var backdrop = document.getElementById('navBackdrop');
-
-    function closeNav() {
-        body.classList.remove('nav-open');
-        if (navToggle) {
-            navToggle.setAttribute('aria-expanded', 'false');
-        }
-    }
-
-    if (navToggle) {
-        navToggle.addEventListener('click', function () {
-            var open = body.classList.toggle('nav-open');
-            navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-        });
-    }
-    if (backdrop) {
-        backdrop.addEventListener('click', closeNav);
-    }
-    var navLinks = document.querySelectorAll('.nav-link');
-    for (var i = 0; i < navLinks.length; i++) {
-        navLinks[i].addEventListener('click', closeNav);
-    }
-    document.addEventListener('keydown', function (event) {
-        if (event.key === 'Escape') {
-            closeNav();
-        }
+    form.elements.name.addEventListener('input', () => {
+        let slug = form.elements.name.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        const host = form.elements.master_host.value.trim().replace(/\./g, '_');
+        if (!slug) slug = host ? `site_${host}` : '';
+        else if (!/^[a-z0-9]/.test(slug)) slug = `s_${slug}`;
+        form.elements.schema.value = slug ? `_rep_${slug.slice(0, 32)}` : '';
     });
-    window.addEventListener('resize', function () {
-        if (window.innerWidth > 980) {
-            closeNav();
-        }
+    form.elements.master_host.addEventListener('input', () => form.elements.name.dispatchEvent(new Event('input')));
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const data = Object.fromEntries(new FormData(form).entries());
+        try { await apiPost('save', data); dialog.close(); await refresh(); }
+        catch (error) { const field = $('#form-error'); field.textContent = error.message; field.hidden = false; }
     });
-
-    /* ---------- Filter tabel ---------- */
-
-    var filterInput = document.getElementById('tableFilter');
-    var filterButtons = document.querySelectorAll('#statusFilters [data-status]');
-    var table = document.getElementById('tablesTable');
-    var tableEmpty = document.getElementById('tableEmpty');
-    var activeStatus = 'all';
-
-    function applyTableFilter() {
-        if (!table) {
-            return;
-        }
-        var query = filterInput ? filterInput.value.toLowerCase().trim() : '';
-        var rows = table.querySelectorAll('tbody tr');
-        var visible = 0;
-
-        for (var index = 0; index < rows.length; index++) {
-            var row = rows[index];
-            var status = row.getAttribute('data-status') || '';
-            var search = row.getAttribute('data-search') || '';
-            var statusOk = activeStatus === 'all' || status === activeStatus;
-            var queryOk = query === '' || search.indexOf(query) !== -1;
-            var show = statusOk && queryOk;
-            row.hidden = !show;
-            if (show) {
-                visible++;
-            }
-        }
-
-        if (tableEmpty) {
-            tableEmpty.hidden = visible !== 0;
-        }
-    }
-
-    if (filterInput) {
-        var debounce = null;
-        filterInput.addEventListener('input', function () {
-            if (debounce) {
-                window.clearTimeout(debounce);
-            }
-            debounce = window.setTimeout(applyTableFilter, 90);
-        });
-    }
-
-    for (var buttonIndex = 0; buttonIndex < filterButtons.length; buttonIndex++) {
-        filterButtons[buttonIndex].addEventListener('click', function () {
-            activeStatus = this.getAttribute('data-status') || 'all';
-            for (var other = 0; other < filterButtons.length; other++) {
-                filterButtons[other].classList.toggle('is-active', filterButtons[other] === this);
-            }
-            applyTableFilter();
-        });
-    }
-
-    /* ---------- Pemilih site ---------- */
-
-    var siteSelect = document.getElementById('siteSelect');
-    if (siteSelect) {
-        siteSelect.addEventListener('change', function () {
-            var form = siteSelect.form;
-            if (form) {
-                form.submit();
-            }
-        });
-    }
-
-    /* ---------- Keyboard ---------- */
-
-    document.addEventListener('keydown', function (event) {
-        if (event.ctrlKey || event.metaKey || event.altKey) {
-            return;
-        }
-        var tag = (event.target && event.target.tagName ? event.target.tagName : '').toLowerCase();
-        if (tag === 'input' || tag === 'textarea' || tag === 'select') {
-            return;
-        }
-        if (event.key === 'r' || event.key === 'R') {
-            window.location.reload();
-        } else if (event.key === '/' && filterInput) {
-            event.preventDefault();
-            filterInput.focus();
-        }
-    });
+    refresh();
+    window.setInterval(refresh, 15000);
 })();
