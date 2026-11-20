@@ -2,7 +2,7 @@
 
 Panduan ini menjalankan **dashboard PHP saja** di Docker. Agent tetap berjalan di
 komputer Windows tiap site; MySQL status tetap berada di server backup atau
-server status pusat. Tidak ada database demo ataupun kredensial bawaan.
+server status pusat. Tidak ada database ataupun kredensial bawaan.
 
 ## 1. Persiapan
 

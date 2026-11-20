@@ -1,20 +1,19 @@
-# Dashboard PHP untuk preview multi-site.
+# Dashboard PHP untuk deployment Podman.
 # Build dari root repositori:
-#   podman build -t replicator-dashboard:demo -f deploy/podman/Containerfile .
+#   podman build -t replicator-dashboard:local -f deploy/podman/Containerfile .
 FROM docker.io/library/php:8.2-apache
 
 RUN docker-php-ext-install pdo_mysql \
     && a2enmod headers \
+    && mkdir -p /var/www/config \
+    && chown www-data:www-data /var/www/config \
+    && printf 'ServerName localhost\n' > /etc/apache2/conf-available/replicator.conf \
+    && a2enconf replicator \
     && rm -rf /var/lib/apt/lists/*
 
-# Document root hanya berisi dashboard; config berada di /var/www/config.
+# Document root hanya berisi dashboard; config di-mount ke /var/www/config.
 COPY dashboard/ /var/www/html/
 
-# Konfigurasi demo (bisa ditimpa dengan bind mount).
-COPY deploy/podman/dashboard.demo.ini /var/www/config/dashboard.ini
-
-RUN printf 'ServerName localhost\n' > /etc/apache2/conf-available/replicator.conf \
-    && a2enconf replicator \
-    && chown -R www-data:www-data /var/www/html /var/www/config
+ENV REPLICATOR_DASHBOARD_CONFIG=/var/www/config/dashboard.ini
 
 EXPOSE 80

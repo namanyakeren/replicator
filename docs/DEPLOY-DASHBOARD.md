@@ -5,8 +5,9 @@ Dashboard hanya **membaca** database status; semua penulisan data dilakukan oleh
 agent di masing-masing site.
 
 > Dokumentasi agent ada di [`DEPLOY-AGENT.md`](DEPLOY-AGENT.md).
-> Jika ingin menjalankan dashboard dengan Docker, lihat
-> [`DEPLOY-DASHBOARD-DOCKER.md`](DEPLOY-DASHBOARD-DOCKER.md).
+> Jika ingin menjalankan dashboard dengan container, lihat
+> [`DEPLOY-DASHBOARD-DOCKER.md`](DEPLOY-DASHBOARD-DOCKER.md) atau
+> [`DEPLOY-DASHBOARD-PODMAN.md`](DEPLOY-DASHBOARD-PODMAN.md).
 
 ---
 
@@ -480,17 +481,6 @@ DROP DATABASE `_rep_jakarta`;
 
 Site yang ditulis manual di `dashboard.ini` tidak punya tombol hapus.
 
-### Alamat demo
-
-Bila memakai demo Podman (`deploy/podman/run-demo.ps1`), tambahkan:
-
-| Nama | Master | Slave | Hasil |
-|---|---|---|---|
-| Jakarta | `192.168.101.11` | `192.168.101.12` | normal |
-| Bandung | `192.168.102.11` | `192.168.102.12` | sebagian tabel gagal |
-| Surabaya | `192.168.103.11` | `192.168.103.12` | stale |
-| Medan | `192.169.101.11` | `192.169.101.12` | offline (schema tidak ada) |
-
 ---
 
 ## 10. Amankan dashboard
@@ -509,7 +499,8 @@ Bila memakai demo Podman (`deploy/podman/run-demo.ps1`), tambahkan:
 5. **Jangan buka port dashboard ke internet publik.**
 6. **Batasi izin tulis** hanya pada folder `config\` (registry), bukan seluruh
    disk.
-7. **Hapus folder demo** (`deploy/podman`) dari mesin produksi.
+7. **Batasi akses ke file config** (`dashboard.ini`, `sites.ini`) hanya untuk
+   admin, dan jangan pernah menaruhnya di document root.
 
 Dashboard mengirim header keamanan: `X-Frame-Options`, `X-Content-Type-Options`,
 `Referrer-Policy`, `Cache-Control: no-store`, dan CSP.

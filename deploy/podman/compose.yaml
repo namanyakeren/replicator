@@ -1,46 +1,21 @@
-# Demo lokal dashboard multi-site.
+# Dashboard Replicator dengan Podman.
 # Jalankan dari root repo:
-#   podman compose -f deploy/podman/compose.yaml up -d --build
-# lalu buka http://localhost:8089
-name: replicator-demo
+#   podman compose --env-file deploy/podman/.env -f deploy/podman/compose.yaml up -d --build
+# Config dan registry site disimpan di deploy/podman/config/ (tidak di-commit).
+name: replicator-dashboard
 
 services:
-  db:
-    image: docker.io/library/mariadb:10.11
-    container_name: rep-demo-db
-    environment:
-      MARIADB_ROOT_PASSWORD: "DemoRoot2026!"
-      MARIADB_DATABASE: "mysql"
-    volumes:
-      - ./demo.sql:/docker-entrypoint-initdb.d/10-demo.sql:ro
-    healthcheck:
-      # Query terautentikasi; `mariadb-admin ping` tetap sukses saat access
-      # denied, sehingga bisa menandai sehat sebelum init selesai.
-      test: ["CMD-SHELL", "mariadb -uroot -p\"$$MARIADB_ROOT_PASSWORD\" -e 'SELECT 1' >/dev/null 2>&1"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
-  heartbeat:
-    image: docker.io/library/mariadb:10.11
-    container_name: rep-demo-heartbeat
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      MARIADB_ROOT_PASSWORD: "DemoRoot2026!"
-    volumes:
-      - ./heartbeat.sh:/heartbeat.sh:ro
-    entrypoint: ["sh", "/heartbeat.sh"]
-
   dashboard:
     build:
       context: ../..
       dockerfile: deploy/podman/Containerfile
-    image: replicator-dashboard:demo
-    container_name: rep-demo-dashboard
-    depends_on:
-      db:
-        condition: service_healthy
+    image: replicator-dashboard:local
+    restart: unless-stopped
     ports:
-      - "8089:80"
+      # Atur DASHBOARD_PORT dan DASHBOARD_BIND di deploy/podman/.env.
+      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8089}:80"
+    volumes:
+      # Folder lokal menyimpan dashboard.ini (rahasia) dan sites.ini (ditulis PHP).
+      - ./config:/var/www/config:Z
+    environment:
+      REPLICATOR_DASHBOARD_CONFIG: /var/www/config/dashboard.ini

@@ -22,8 +22,9 @@ config/agent.ini
 config/dashboard.ini
 dashboard/config.ini
 
-# Data runtime Podman / demo
+# Data runtime Podman
 deploy/podman/.env
+deploy/podman/config/
 deploy/docker/config/
 deploy/docker/.env
 

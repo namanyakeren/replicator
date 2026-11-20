@@ -1,4 +1,4 @@
-# Kecilkan build context tanpa memutus demo Podman (dashboard.demo.ini).
+# Kecilkan build context; config di-mount saat runtime, bukan disalin ke image.
 .git/
 .vscode/
 .idea/
@@ -12,4 +12,5 @@ config.ini
 dashboard/config.ini
 deploy/docker/config/
 deploy/docker/.env
+deploy/podman/config/
 deploy/podman/.env

@@ -31,7 +31,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - [Versi dan artefak rilis](#versi-dan-artefak-rilis)
 - [Build agent dan installer dari source](#build-agent-dan-installer-dari-source)
 - [Deploy dashboard](#deploy-dashboard)
-- [Preview dashboard dengan Podman](#preview-dashboard-dengan-podman)
+- [Deploy dashboard dengan Podman](#deploy-dashboard-dengan-podman)
 - [Grant MySQL](#grant-mysql)
 - [Keamanan](#keamanan)
 - [Troubleshooting](#troubleshooting)
@@ -188,7 +188,7 @@ replicator/
 │  ├─ agent.example.ini           # Template environment agent
 │  ├─ dashboard.example.ini       # Template environment dashboard
 │  └─ sites.ini                   # Dibuat otomatis dari halaman Site
-├─ deploy/podman/                 # Demo lokal (Containerfile, SQL, compose)
+├─ deploy/podman/                 # Dashboard produksi dengan Podman
 ├─ deploy/docker/                 # Dashboard produksi dengan Docker Compose
 ├─ docs/
 │  ├─ DEPLOY-AGENT.md             # Tutorial deploy agent + mode darurat
@@ -966,7 +966,9 @@ Build MSVC:
 ## Deploy dashboard
 
 Panduan lengkap: [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
-Untuk Docker Compose tanpa database demo: [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md).
+Untuk container: [`docs/DEPLOY-DASHBOARD-DOCKER.md`](docs/DEPLOY-DASHBOARD-DOCKER.md)
+(Docker) atau [`docs/DEPLOY-DASHBOARD-PODMAN.md`](docs/DEPLOY-DASHBOARD-PODMAN.md)
+(Podman).
 Salin `deploy/docker/.env.example` menjadi `deploy/docker/.env` dan ubah
 `DASHBOARD_PORT` (misalnya `8090`) untuk memilih port host; jalankan Compose
 dengan `--env-file deploy/docker/.env` seperti di panduan.
@@ -1030,66 +1032,41 @@ Untuk IIS/Apache, set environment variable pada service, bukan hanya di sesi Pow
 
 ---
 
-## Preview dashboard dengan Podman
+## Deploy dashboard dengan Podman
 
-Demo ini membuat:
+Panduan lengkap: [`docs/DEPLOY-DASHBOARD-PODMAN.md`](docs/DEPLOY-DASHBOARD-PODMAN.md).
 
-- MariaDB berisi tiga schema status (`_rep_jakarta`, `_rep_bandung`, `_rep_surabaya`).
-- Dashboard yang mulai **tanpa site** (registry kosong).
-- Container heartbeat yang memperbarui Jakarta dan Bandung setiap 15 detik.
+Siapkan config di folder yang tidak di-commit:
 
-Setelah dashboard terbuka, tambahkan site lewat menu **Site**:
-
-| Nama | IP master | IP slave | Schema | Hasil |
-|---|---|---|---|---|
-| Jakarta | `192.168.101.11` | `192.168.101.12` | `_rep_jakarta` | sehat |
-| Bandung | `192.168.102.11` | `192.168.102.12` | `_rep_bandung` | dua tabel error |
-| Surabaya | `192.168.103.11` | `192.168.103.12` | `_rep_surabaya` | heartbeat basi |
-| Medan | `192.169.101.11` | `192.169.101.12` | `_rep_medan` | offline (schema tidak ada) |
-
-Semua data adalah data demo. Basic Auth dimatikan pada config demo. Registry
-disimpan di `/var/www/config/sites.ini` di dalam container: bertahan saat
-stop/start, tetapi hilang bila container dibuat ulang.
-
-### Cara cepat (PowerShell)
-
-```powershell
-podman machine start
-.\deploy\podman\run-demo.ps1 -Rebuild
+```sh
+mkdir -p deploy/podman/config
+cp config/dashboard.example.ini deploy/podman/config/dashboard.ini
+cp deploy/podman/.env.example deploy/podman/.env
+# edit dashboard.ini (password + koneksi MySQL) dan .env (port/bind)
 ```
 
-Buka:
+Jalankan dengan Compose:
 
-```text
-http://localhost:8089/
+```sh
+podman compose --env-file deploy/podman/.env -f deploy/podman/compose.yaml up -d --build
 ```
 
-Hentikan dan bersihkan:
+Bila provider Compose belum tersedia, jalankan manual:
 
-```powershell
-podman rm -f rep-demo-dashboard rep-demo-heartbeat rep-demo-db
-podman network rm rep-demo-net
+```sh
+podman build -t replicator-dashboard:local -f deploy/podman/Containerfile .
+podman run -d --name replicator-dashboard \
+  -p 127.0.0.1:8089:80 \
+  -v "$PWD/deploy/podman/config:/var/www/config:Z" \
+  -e REPLICATOR_DASHBOARD_CONFIG=/var/www/config/dashboard.ini \
+  replicator-dashboard:local
 ```
 
-### Podman Compose
-
-```powershell
-podman compose -f deploy\podman\compose.yaml up -d --build
-```
-
-Bila `podman compose` membutuhkan provider Compose, gunakan skrip PowerShell di atas.
-
-### Build image manual
-
-```powershell
-podman build -t replicator-dashboard:demo -f deploy\podman\Containerfile .
-```
-
-Image demo sudah membawa `deploy/podman/dashboard.demo.ini` di `/var/www/config/dashboard.ini`. Untuk memakai config lain, mount file tersebut ke path itu. Perintah build ini hanya membuat image; untuk menjalankan demo lengkap (MariaDB, heartbeat, dan dashboard) gunakan skrip PowerShell atau Compose di atas. Bila ingin menempelkan dashboard ke demo yang sudah berjalan:
-
-```powershell
-podman run -d --name rep-demo-dashboard --network rep-demo-net -p 8089:80 replicator-dashboard:demo
-```
+Buka `http://localhost:8089/` (sesuai `DASHBOARD_PORT`). Tambahkan site lewat
+menu **Site**; registry disimpan di `deploy/podman/config/sites.ini` dan tetap
+ada saat container dibuat ulang. Pada Podman rootless, jalankan
+`podman unshare chown -R 33:33 deploy/podman/config` agar halaman Site bisa
+menulis registry.
 
 ---
 
