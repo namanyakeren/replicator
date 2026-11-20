@@ -118,6 +118,25 @@ Bind mount tersebut tetap ada walaupun container dihapus atau image diperbarui.
 hanya melayani `/var/www/html` (`dashboard/`); config berada di
 `/var/www/config`, di luar document root.
 
+### 4.1 Mengganti kredensial MySQL
+
+Dashboard memakai `[dashboard] db_user`/`db_password` di
+`deploy/podman/config/dashboard.ini`. Untuk memakai user yang sama dengan agent
+(misalnya `repl_agent`), jalankan dari root repo:
+
+```sh
+./deploy/podman/set-db-credentials.sh repl_agent
+```
+
+Skrip meminta password tanpa echo, lalu menulisnya ke config. Password user
+agent ada di `config\agent.ini` pada site, bagian `[backup] password` atau
+`[status] password` (mode pusat). Jangan menyalin password ke chat atau shell
+history.
+
+Jika beberapa kali login gagal, MySQL dapat menunda percobaan berikutnya
+(connection control). Tutup tab dashboard, tunggu beberapa saat, lalu ulangi
+dengan password yang benar.
+
 ## 5. Update, backup, dan penghentian
 
 Sebelum update, simpan salinan **kedua file** bila ada:
