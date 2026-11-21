@@ -47,6 +47,7 @@ struct Args {
     failback: bool,
     arm_failback: bool,
     disarm_failback: bool,
+    resume_forward: bool,
 }
 
 fn run() -> Result<i32, String> {
@@ -94,6 +95,10 @@ fn run() -> Result<i32, String> {
         return toggle_failback(&config, &logger, args.arm_failback);
     }
 
+    if args.resume_forward {
+        return resume_forward(&config, &logger);
+    }
+
     if args.failback {
         let mut runner = Runner::new(config, logger.clone());
         runner.start();
@@ -108,6 +113,14 @@ fn run() -> Result<i32, String> {
     if args.once {
         let mut runner = Runner::new(config, logger.clone());
         runner.start();
+        if runner.pending_active() {
+            println!(
+                "Status failback PENDING: replikasi maju dijeda. Verifikasi data lalu \
+                 jalankan `replicator-agent --resume-forward`."
+            );
+            runner.finish();
+            return Ok(1);
+        }
         runner.run_once();
         runner.finish();
         return Ok(0);
@@ -140,6 +153,7 @@ pub struct UiState {
     pub state: String,
     pub direction: String,
     pub failback_armed: bool,
+    pub failback_pending: bool,
     pub failback_state: String,
     pub phase: String,
     pub current_table: String,
@@ -162,6 +176,7 @@ impl Default for UiState {
             state: "idle".to_string(),
             direction: "forward".to_string(),
             failback_armed: false,
+            failback_pending: false,
             failback_state: String::new(),
             phase: String::new(),
             current_table: String::new(),
@@ -186,11 +201,27 @@ fn run_tray_mode(config: Config, logger: Arc<Logger>) -> Result<i32, String> {
     let paused = Arc::new(AtomicBool::new(false));
     let failback_state = FailbackState::new(config.failback.state_file.clone());
     let armed = failback_state.is_armed();
+    let pending = failback_state.is_pending();
     let ui = Arc::new(Mutex::new(UiState {
         site: config.agent_id.clone(),
         version: VERSION.to_string(),
-        state: if armed { "armed".to_string() } else { "idle".to_string() },
-        failback_armed: armed,
+        state: if pending {
+            "pending".to_string()
+        } else if armed {
+            "armed".to_string()
+        } else {
+            "idle".to_string()
+        },
+        direction: "forward".to_string(),
+        failback_armed: armed && !pending,
+        failback_pending: pending,
+        failback_state: if pending {
+            "pending".to_string()
+        } else if armed {
+            "waiting".to_string()
+        } else {
+            String::new()
+        },
         ..Default::default()
     }));
 
@@ -239,6 +270,7 @@ fn parse_args() -> Result<Option<Args>, String> {
         failback: false,
         arm_failback: false,
         disarm_failback: false,
+        resume_forward: false,
     };
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -257,6 +289,7 @@ fn parse_args() -> Result<Option<Args>, String> {
             "--failback" => parsed.failback = true,
             "--arm-failback" => parsed.arm_failback = true,
             "--disarm-failback" => parsed.disarm_failback = true,
+            "--resume-forward" => parsed.resume_forward = true,
             "--config" => {
                 let value = args
                     .next()
@@ -283,10 +316,12 @@ fn parse_args() -> Result<Option<Args>, String> {
         parsed.failback,
         parsed.arm_failback,
         parsed.disarm_failback,
+        parsed.resume_forward,
     ];
     if runtime_modes.iter().filter(|mode| **mode).count() > 1 {
         return Err(
-            "--once, --tray, --failback, --arm-failback, dan --disarm-failback tidak bisa digabung"
+            "--once, --tray, --failback, --arm-failback, --disarm-failback, dan \
+             --resume-forward tidak bisa digabung"
                 .to_string(),
         );
     }
@@ -305,6 +340,7 @@ fn print_usage() {
            replicator-agent [--config <file>] --arm-failback\n\
            replicator-agent [--config <file>] --disarm-failback\n\
            replicator-agent [--config <file>] --failback\n\
+           replicator-agent [--config <file>] --resume-forward\n\
          \n\
          Opsi:\n\
            --config <file>     Path ke config agent (default: config\\agent.ini)\n\
@@ -313,7 +349,8 @@ fn print_usage() {
            --tray              Tampilkan ikon dan monitor di system tray (Windows)\n\
            --arm-failback      Aktifkan mode darurat (tunggu master hidup)\n\
            --disarm-failback   Matikan mode darurat tanpa replikasi balik\n\
-           --failback          Jalankan replikasi balik backup -> master sekarang\n\
+           --failback          Bandingkan lalu replikasi balik backup -> master\n\
+           --resume-forward    Setujui hasil failback dan mulai replikasi maju\n\
            -h, --help          Tampilkan bantuan\n\
            -V, --version       Tampilkan versi\n",
         VERSION
@@ -358,6 +395,13 @@ fn toggle_failback(config: &Config, logger: &Logger, arm: bool) -> Result<i32, S
     }
     let state = FailbackState::new(config.failback.state_file.clone());
     if arm {
+        if state.is_pending() {
+            println!(
+                "Replikasi balik berstatus PENDING. Verifikasi data lalu jalankan \
+                 `--resume-forward` sebelum mengaktifkan mode darurat lagi."
+            );
+            return Ok(1);
+        }
         if state.arm()? {
             logger.info("mode darurat diaktifkan lewat CLI");
             println!("Mode darurat AKTIF. Replikasi maju dijeda sampai replikasi balik selesai.");
@@ -379,6 +423,26 @@ fn toggle_failback(config: &Config, logger: &Logger, arm: bool) -> Result<i32, S
     } else {
         println!("Mode darurat tidak aktif.");
     }
+    Ok(0)
+}
+
+/// Setujui hasil replikasi balik dan izinkan replikasi maju berjalan lagi.
+fn resume_forward(config: &Config, logger: &Logger) -> Result<i32, String> {
+    let state = FailbackState::new(config.failback.state_file.clone());
+    if !state.is_pending() {
+        println!(
+            "Tidak ada status pending. Replikasi maju memang sudah boleh berjalan \
+             (atau agent belum menyelesaikan replikasi balik)."
+        );
+        return Ok(1);
+    }
+    state.resume_forward()?;
+    logger.info("status pending failback disetujui lewat CLI; replikasi maju dilanjutkan");
+    println!(
+        "Status pending dihapus. Replikasi maju master -> backup akan berjalan lagi \
+         pada siklus berikutnya."
+    );
+    println!("Penanda pending dihapus: {}", state.pending_file().display());
     Ok(0)
 }
 
@@ -594,7 +658,11 @@ impl Runner {
                 continue;
             }
 
-            if self.failback_active() {
+            if self.pending_active() {
+                self.run_pending(&running, &paused);
+                continue;
+            }
+            if self.armed_active() {
                 self.run_armed(&running, &paused);
                 continue;
             }
@@ -623,7 +691,21 @@ impl Runner {
     }
 
     fn failback_active(&self) -> bool {
-        self.config.failback.enabled && self.failback.is_armed()
+        self.config.failback.enabled
+            && (self.failback.is_armed() || self.failback.is_pending())
+    }
+
+    /// Mode darurat aktif dan menunggu master / menjalankan replikasi balik.
+    fn armed_active(&self) -> bool {
+        self.config.failback.enabled
+            && self.failback.is_armed()
+            && !self.failback.is_pending()
+    }
+
+    /// Replikasi balik selesai; replikasi maju dijeda sampai operator menekan
+    /// tombol "Mulai replikasi maju".
+    fn pending_active(&self) -> bool {
+        self.config.failback.enabled && self.failback.is_pending()
     }
 
     fn start(&mut self) {
@@ -638,14 +720,31 @@ impl Runner {
             ),
         );
         self.prune();
-        self.publish(
-            "idle",
-            "",
-            "",
-            0,
-            0,
-            "Agent siap, menunggu siklus pertama",
-        );
+        if self.pending_active() {
+            let message = "Replikasi balik selesai. Replikasi maju dijeda (pending) sampai \
+                           operator memverifikasi data dan memilih 'Mulai replikasi maju'.";
+            self.direction = "forward".to_string();
+            self.status
+                .mark_failback_pending(message, self.config.sync.interval_sec);
+            self.publish_failback(false, "pending", "pending", message);
+        } else if self.armed_active() {
+            self.direction = "reverse".to_string();
+            let message = format!(
+                "Mode darurat aktif: menunggu master {}:{} hidup kembali",
+                self.config.master.host, self.config.master.port
+            );
+            self.status.mark_failback_armed("waiting", &message);
+            self.publish_failback(true, "waiting", "armed", &message);
+        } else {
+            self.publish(
+                "idle",
+                "",
+                "",
+                0,
+                0,
+                "Agent siap, menunggu siklus pertama",
+            );
+        }
     }
 
     fn finish(&mut self) {
@@ -663,6 +762,16 @@ impl Runner {
     }
 
     fn run_once(&mut self) {
+        if self.pending_active() {
+            let message = "Replikasi maju dijeda karena status failback PENDING. \
+                           Verifikasi data lalu mulai replikasi maju.";
+            self.direction = "forward".to_string();
+            self.logger.warn(message);
+            self.status
+                .mark_failback_pending(message, self.config.sync.interval_sec);
+            self.publish_failback(false, "pending", "pending", message);
+            return;
+        }
         self.direction = "forward".to_string();
         self.cycle_no = self.cycle_no.saturating_add(1);
         let cycle_no = self.cycle_no;
@@ -852,7 +961,7 @@ impl Runner {
                 self.sleep_interruptible(Duration::from_millis(500), running, Some(paused));
                 continue;
             }
-            if !self.failback_active() {
+            if !self.armed_active() {
                 self.logger
                     .info("mode darurat dimatikan; replikasi maju dilanjutkan");
                 self.direction = "forward".to_string();
@@ -912,11 +1021,66 @@ impl Runner {
             self.sleep_interruptible(Duration::from_secs(2), running, Some(paused));
         }
 
-        if self.failback_active() {
+        if self.armed_active() {
             self.status.mark_failback_armed(
                 "waiting",
                 "Agent berhenti; mode darurat tetap aktif sampai dijalankan lagi.",
             );
+        }
+    }
+
+    /// Loop saat replikasi balik sudah selesai dan menunggu konfirmasi operator.
+    /// Replikasi maju **tidak** dijalankan sampai penanda pending dihapus
+    /// (tombol tray "Mulai replikasi maju" atau `--resume-forward`).
+    fn run_pending(&mut self, running: &AtomicBool, paused: &AtomicBool) {
+        self.direction = "forward".to_string();
+        let message = "Replikasi balik selesai. Replikasi maju dijeda (pending) sampai \
+                       operator memverifikasi data dan memilih 'Mulai replikasi maju'.";
+        self.logger.info(message);
+        self.status
+            .mark_failback_pending(message, self.config.sync.interval_sec);
+        self.publish_failback(false, "pending", "pending", message);
+
+        let mut last_publish = Instant::now();
+        while running.load(Ordering::SeqCst) {
+            if paused.load(Ordering::SeqCst) {
+                self.publish_paused();
+                self.sleep_interruptible(Duration::from_millis(500), running, Some(paused));
+                continue;
+            }
+            if !self.pending_active() {
+                if self.armed_active() {
+                    self.logger.info("penanda pending hilang; mode darurat aktif kembali");
+                    return;
+                }
+                self.logger.info(
+                    "status pending disetujui operator; replikasi maju dilanjutkan",
+                );
+                self.status.mark_failback_off();
+                self.publish(
+                    "idle",
+                    "",
+                    "",
+                    0,
+                    0,
+                    "Status pending disetujui. Replikasi maju akan berjalan pada siklus berikutnya.",
+                );
+                return;
+            }
+            if last_publish.elapsed() >= Duration::from_secs(10) {
+                self.status
+                    .mark_failback_pending(message, self.config.sync.interval_sec);
+                self.publish_failback(false, "pending", "pending", message);
+                last_publish = Instant::now();
+            } else {
+                self.status.touch();
+            }
+            self.sleep_interruptible(Duration::from_secs(2), running, Some(paused));
+        }
+
+        if self.pending_active() {
+            self.status
+                .mark_failback_pending(message, self.config.sync.interval_sec);
         }
     }
 
@@ -938,31 +1102,6 @@ impl Runner {
         }
 
         self.direction = "reverse".to_string();
-        self.cycle_no = self.cycle_no.saturating_add(1);
-        let cycle_no = self.cycle_no;
-        let intro = format!(
-            "Replikasi balik #{} dimulai ({}): {}:{} -> {}:{}",
-            cycle_no,
-            trigger,
-            self.config.backup.host,
-            self.config.backup.port,
-            self.config.master.host,
-            self.config.master.port
-        );
-        self.logger.info(&intro);
-        self.status.cycle_started(cycle_no, "reverse");
-        let cycle_row = self.status.cycle_row_start(cycle_no, "reverse");
-        self.status.event("warn", "failback_started", &intro);
-        self.publish_failback(
-            true,
-            "running",
-            "syncing",
-            &format!(
-                "Replikasi balik #{}: {} -> {}",
-                cycle_no, self.config.backup.host, self.config.master.host
-            ),
-        );
-
         let mut reversed = self.config.clone();
         std::mem::swap(&mut reversed.master, &mut reversed.backup);
         // Mode darurat tidak boleh membuat/menghapus database master, dan target
@@ -970,6 +1109,139 @@ impl Runner {
         reversed.create_database = false;
         reversed.sync.truncate_before_full = true;
         reversed.sync.disable_fk_checks = true;
+
+        // Jangan menimpa master bila backup tidak punya perubahan. Perbandingan
+        // hanya membaca; tidak ada data yang ditulis pada tahap ini.
+        self.publish_failback(
+            true,
+            "running",
+            "syncing",
+            "Membandingkan data backup dengan master sebelum replikasi balik...",
+        );
+        self.logger
+            .info("replikasi balik: membandingkan data backup dengan master");
+        let compare_started = Instant::now();
+        let compare = match sync::compare_cycle(&reversed, &self.logger) {
+            Ok(compare) => compare,
+            Err(error) => {
+                let message = format!(
+                    "Pemeriksaan perbedaan data backup vs master gagal: {}. Mode darurat tetap aktif.",
+                    error
+                );
+                let duration_ms = compare_started.elapsed().as_millis() as u64;
+                self.status.mark_failback_failed("reverse", &message, duration_ms);
+                self.status
+                    .event("error", "failback_compare_failed", &message);
+                self.write_status_file("error", &message, None, Some(&error), duration_ms);
+                self.publish_failback(true, "error", "error", &message);
+                self.logger.error(&message);
+                self.notify("error", &message);
+                return false;
+            }
+        };
+
+        self.cycle_no = self.cycle_no.saturating_add(1);
+        let cycle_no = self.cycle_no;
+        let intro = format!(
+            "Replikasi balik #{} dimulai ({}): {}:{} -> {}:{}; {}",
+            cycle_no,
+            trigger,
+            self.config.backup.host,
+            self.config.backup.port,
+            self.config.master.host,
+            self.config.master.port,
+            compare.summary()
+        );
+        self.logger.info(&intro);
+        self.status.cycle_started(cycle_no, "reverse");
+        let cycle_row = self.status.cycle_row_start(cycle_no, "reverse");
+        self.status.event("warn", "failback_compare", &intro);
+
+        if !compare.has_changes() {
+            let next_run_sec = self.config.sync.interval_sec;
+            let duration_ms = compare_started.elapsed().as_millis() as u64;
+            let message = format!(
+                "Replikasi balik #{} tidak diperlukan: {}. Replikasi maju dijeda (pending); \
+                 verifikasi data lalu pilih 'Mulai replikasi maju'.",
+                cycle_no,
+                compare.summary()
+            );
+            if let Err(error) = self.failback.mark_pending(&message) {
+                let message = format!(
+                    "Tidak ada perbedaan data, tetapi penanda pending gagal ditulis: {}. \
+                     Mode darurat tetap aktif.",
+                    error
+                );
+                if let Some(id) = cycle_row {
+                    self.status.cycle_row_end(
+                        id,
+                        duration_ms,
+                        "error",
+                        compare.tables.len(),
+                        0,
+                        0,
+                        0,
+                        Some(&message),
+                    );
+                }
+                self.status.mark_failback_failed("reverse", &message, duration_ms);
+                self.status
+                    .event("error", "failback_pending_failed", &message);
+                self.write_status_file("error", &message, None, Some(&error), duration_ms);
+                self.publish_failback(true, "error", "error", &message);
+                self.logger.error(&message);
+                self.notify("error", &message);
+                return false;
+            }
+            if let Some(id) = cycle_row {
+                self.status.cycle_row_end(
+                    id,
+                    duration_ms,
+                    "skipped",
+                    compare.tables.len(),
+                    0,
+                    0,
+                    0,
+                    None,
+                );
+            }
+            self.status.mark_failback_pending(&message, next_run_sec);
+            self.status.event("info", "failback_skipped", &message);
+            self.write_status_file("pending", &message, None, None, duration_ms);
+            self.last_state = "pending".to_string();
+            self.last_problem = false;
+            self.publish_failback(false, "pending", "pending", &message);
+            self.logger.info(&message);
+            self.notify("info", &message);
+            return true;
+        }
+
+        if !compare.target_only.is_empty() {
+            self.logger.warn(&format!(
+                "replikasi balik: tabel hanya ada di master (tidak dihapus): {}",
+                compare.target_only.join(", ")
+            ));
+        }
+        self.logger.info(&format!(
+            "replikasi balik: tabel berbeda yang akan disalin: {}",
+            compare.changed.join(", ")
+        ));
+        // Hanya tabel yang berbeda yang disalin balik. Tabel yang sudah sama
+        // tidak disentuh, sehingga data master tidak berisiko dikembalikan ke
+        // kondisi lama.
+        reversed.only_tables = Some(compare.changed.clone());
+        self.publish_failback(
+            true,
+            "running",
+            "syncing",
+            &format!(
+                "Replikasi balik #{}: {} tabel berbeda, {} -> {}",
+                cycle_no,
+                compare.changed.len(),
+                self.config.backup.host,
+                self.config.master.host
+            ),
+        );
 
         let started = Instant::now();
         let progress = self.ui.as_ref().map(|ui| {
@@ -1023,30 +1295,40 @@ impl Runner {
                 }
 
                 let message = format!(
-                    "Replikasi balik selesai: {} tabel, {} baris. Mode darurat dimatikan.",
+                    "Replikasi balik selesai: {} tabel berbeda, {} baris disalin. \
+                     Replikasi maju dijeda (pending); verifikasi data lalu pilih \
+                     'Mulai replikasi maju'.",
                     outcome.tables_ok, outcome.rows_written
                 );
-                match self.failback.disarm() {
-                    Ok(_) => {
-                        self.status.mark_failback_done(&message, next_run_sec);
-                        self.status.event("info", "failback_done", &message);
-                        self.write_status_file("ok", &message, Some(&outcome), None, duration_ms);
-                        self.last_state = "ok".to_string();
+                match self.failback.mark_pending(&message) {
+                    Ok(()) => {
+                        self.status.mark_failback_pending(&message, next_run_sec);
+                        self.status.event("info", "failback_pending", &message);
+                        self.write_status_file(
+                            "pending",
+                            &message,
+                            Some(&outcome),
+                            None,
+                            duration_ms,
+                        );
+                        self.last_state = "pending".to_string();
                         self.last_problem = false;
-                        self.publish_outcome("ok", Some(&outcome), &message);
-                        self.publish_failback(false, "done", "ok", &message);
+                        self.publish_outcome("pending", Some(&outcome), &message);
+                        self.publish_failback(false, "pending", "pending", &message);
                         self.logger.info(&message);
                         self.notify("info", &message);
                         true
                     }
                     Err(error) => {
                         let message = format!(
-                            "Replikasi balik selesai tetapi penanda darurat gagal dihapus: {}. Mode darurat tetap aktif.",
+                            "Replikasi balik selesai tetapi penanda pending gagal ditulis: {}. \
+                             Mode darurat tetap aktif.",
                             error
                         );
                         self.status
                             .mark_failback_failed("reverse", &message, duration_ms);
-                        self.status.event("error", "failback_disarm_failed", &message);
+                        self.status
+                            .event("error", "failback_pending_failed", &message);
                         self.write_status_file("error", &message, None, Some(&error), duration_ms);
                         self.publish_failback(true, "error", "error", &message);
                         self.logger.error(&message);
@@ -1116,6 +1398,13 @@ impl Runner {
             println!("{}", message);
             return false;
         }
+        if self.failback.is_pending() {
+            let message = "Replikasi balik berstatus PENDING. Verifikasi data lalu jalankan \
+                           `--resume-forward`; setelah itu mode darurat bisa diaktifkan lagi.";
+            self.logger.warn(message);
+            println!("{}", message);
+            return false;
+        }
         if let Err(error) = self.failback.arm() {
             let message = format!("tidak bisa menyiapkan mode darurat: {}", error);
             self.logger.error(&message);
@@ -1132,7 +1421,14 @@ impl Runner {
             println!("{}", message);
             return false;
         }
-        self.run_failback("CLI --failback")
+        let ok = self.run_failback("CLI --failback");
+        if ok {
+            println!(
+                "Status replikasi balik: PENDING. Replikasi maju belum berjalan; \
+                 verifikasi data master lalu jalankan `replicator-agent --resume-forward`."
+            );
+        }
+        ok
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1290,7 +1586,8 @@ impl Runner {
         let mut ui = ui.lock().unwrap_or_else(|poison| poison.into_inner());
         ui.state = state.to_string();
         ui.direction = self.direction.clone();
-        ui.failback_armed = self.failback.is_armed();
+        ui.failback_pending = self.failback.is_pending();
+        ui.failback_armed = self.failback.is_armed() && !ui.failback_pending;
         ui.phase = phase.to_string();
         ui.current_table = table.to_string();
         ui.table_index = table_index;
@@ -1307,7 +1604,8 @@ impl Runner {
         let mut ui = ui.lock().unwrap_or_else(|poison| poison.into_inner());
         ui.state = state.to_string();
         ui.direction = self.direction.clone();
-        ui.failback_armed = armed;
+        ui.failback_pending = self.failback.is_pending();
+        ui.failback_armed = armed && !ui.failback_pending;
         ui.failback_state = failback_state.to_string();
         ui.phase = if state == "syncing" {
             "prepare".to_string()
@@ -1328,6 +1626,9 @@ impl Runner {
         if ui.state != "paused" {
             ui.state = "paused".to_string();
             ui.direction = self.direction.clone();
+            ui.failback_pending = self.failback.is_pending();
+            ui.failback_armed =
+                self.failback.is_armed() && !self.failback.is_pending();
             ui.phase = String::new();
             ui.message =
                 "Agent dihentikan. Siklus yang sedang berjalan diselesaikan dulu.".to_string();
@@ -1391,7 +1692,8 @@ impl Runner {
 
         let json = format!(
             "{{\n  \"agent_id\": \"{}\",\n  \"version\": \"{}\",\n  \"state\": \"{}\",\n  \
-             \"direction\": \"{}\",\n  \"failback_armed\": {},\n  \"failback_state\": \"{}\",\n  \
+             \"direction\": \"{}\",\n  \"failback_armed\": {},\n  \"failback_pending\": {},\n  \
+             \"failback_state\": \"{}\",\n  \
              \"cycle_no\": {},\n  \"updated_at\": \"{}\",\n  \"updated_at_utc\": \"{}\",\n  \
              \"duration_ms\": {},\n  \"tables_total\": {},\n  \"tables_ok\": {},\n  \
              \"tables_error\": {},\n  \"rows_read\": {},\n  \"rows_written\": {},\n  \
@@ -1401,8 +1703,19 @@ impl Runner {
             util::json_escape(&self.info.version),
             util::json_escape(state),
             util::json_escape(&self.direction),
-            if self.failback.is_armed() { "true" } else { "false" },
-            if self.failback.is_armed() {
+            if self.failback.is_armed() && !self.failback.is_pending() {
+                "true"
+            } else {
+                "false"
+            },
+            if self.failback.is_pending() {
+                "true"
+            } else {
+                "false"
+            },
+            if self.failback.is_pending() {
+                "pending"
+            } else if self.failback.is_armed() {
                 "armed"
             } else {
                 "off"

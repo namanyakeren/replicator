@@ -51,7 +51,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - **Installer satu file** (`replicator-setup.exe`) yang membuat config, user MySQL, grant, database backup, dan schema status otomatis.
 - **Ikon tray** dengan menu Mulai, Hentikan, Monitor replikasi, Buka log, dan Keluar.
 - **Monitor replikasi langsung**: tabel yang sedang disalin, fase, dan jumlah baris.
-- **Mode darurat (failback)**: saat master mati dan backup dipakai sebagai database utama, agent menjeda replikasi maju lalu menyalin balik backup → master secara otomatis begitu master hidup kembali. Bisa diaktifkan dari tray, CLI, atau installer.
+- **Mode darurat (failback)**: saat master mati dan backup dipakai sebagai database utama, agent menjeda replikasi maju, membandingkan backup dengan master, lalu menyalin balik hanya tabel yang berbeda. Setelah itu status **pending** sampai operator memilih **Mulai replikasi maju**. Bisa diaktifkan dari tray, CLI, atau installer.
 - **Versi agent terlihat** di installer, `--version`, ikon tray, monitor, dashboard, dan schema status.
 - Mendukung **port MySQL kustom** untuk master dan backup.
 - Autostart per-user tanpa hak Administrator; tetap bisa dipasang sebagai Scheduled Task.
@@ -114,7 +114,7 @@ replicator/
 │  ├─ src/
 │  │  ├─ config.rs                # Parser config + validasi
 │  │  ├─ db.rs                    # Koneksi MySQL
-│  │  ├─ failback.rs              # Penanda mode darurat (arm/request/disarm)
+│  │  ├─ failback.rs              # Penanda mode darurat + status pending
 │  │  ├─ main.rs                  # CLI, runner, notifikasi, failback
 │  │  ├─ status.rs                # Tabel _rep, heartbeat, event, migrasi kolom
 │  │  ├─ sync.rs                  # Full load, incremental, verifikasi
@@ -464,22 +464,28 @@ Alur:
 2. Replikasi maju (master → backup) **dijeda**; status menjadi `armed` dan
    dashboard menampilkan **Mode darurat**.
 3. Agent memantau master. Setelah master bisa dijangkau terus selama
-   `after_sec`, agent menjalankan **full load backup → master** (tabel target
-   di-truncate, FK check dimatikan).
-4. Bila berhasil, penanda darurat dihapus dan replikasi maju kembali normal.
-   Bila gagal, mode darurat tetap aktif dan dicoba lagi.
+   `after_sec`, agent **membandingkan** isi backup dengan master (jumlah baris,
+   fingerprint CRC32, dan struktur kolom). Tabel yang identik tidak disentuh.
+4. Hanya tabel yang berbeda yang disalin balik (full load per tabel). Bila tidak
+   ada perbedaan, replikasi balik dilewati.
+5. Status menjadi **pending**: replikasi maju **tetap dijeda** sampai operator
+   memverifikasi data master lalu memilih **Mulai replikasi maju** di tray atau
+   menjalankan `--resume-forward`.
+6. Bila gagal, mode darurat tetap aktif dan dicoba lagi.
 
 Perintah manual:
 
 ```powershell
 .\replicator-agent.exe --config .\config\agent.ini --arm-failback
 .\replicator-agent.exe --config .\config\agent.ini --failback
+.\replicator-agent.exe --config .\config\agent.ini --resume-forward
 .\replicator-agent.exe --config .\config\agent.ini --disarm-failback
 ```
 
-> **PERINGATAN:** replikasi balik **menimpa** data master dengan data backup.
-> Aktifkan hanya bila master benar-benar tidak dipakai menulis selama gangguan.
-> Saat mode darurat aktif, jangan menulis ke master sampai proses selesai.
+> **PERINGATAN:** replikasi balik **menimpa tabel yang berbeda di master** dengan
+> data backup. Aktifkan hanya bila master benar-benar tidak dipakai menulis
+> selama gangguan. Saat mode darurat/pending aktif, jangan menulis ke master
+> sampai proses selesai dan data diverifikasi.
 > Bila `auto = "false"`, agent menunggu perintah **Sinkronkan balik sekarang**
 > dari tray atau `--failback`.
 
@@ -499,9 +505,10 @@ Panduan lengkap ada di [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md#61-mode-dar
 # Mode tray: ikon di pojok kanan bawah + monitor replikasi
 .\replicator-agent.exe --tray --config .\config\agent.ini
 
-# Mode darurat (failback): aktifkan, jalankan sekarang, atau batalkan
+# Mode darurat (failback): aktifkan, jalankan sekarang, setujui, atau batalkan
 .\replicator-agent.exe --arm-failback --config .\config\agent.ini
 .\replicator-agent.exe --failback --config .\config\agent.ini
+.\replicator-agent.exe --resume-forward --config .\config\agent.ini
 .\replicator-agent.exe --disarm-failback --config .\config\agent.ini
 
 # Mode loop (foreground, tanpa ikon tray)
@@ -519,7 +526,7 @@ Tanpa `--config`, agent mencari `config\agent.ini` seperti dijelaskan pada [urut
 
 ### Exit code `--once`
 
-`--once` mengembalikan `0` setelah siklus selesai, meskipun siklus tersebut mencatat error tabel atau error koneksi. Ini disengaja agar Scheduled Task tidak dianggap gagal terus-menerus. Periksa dashboard, log, atau status file untuk hasil sebenarnya. `--check` mengembalikan `1` bila ada masalah koneksi/config.
+`--once` mengembalikan `0` setelah siklus selesai, meskipun siklus tersebut mencatat error tabel atau error koneksi. Ini disengaja agar Scheduled Task tidak dianggap gagal terus-menerus. Pengecualian: bila status failback masih **PENDING**, `--once` tidak menjalankan replikasi maju dan mengembalikan `1`. Periksa dashboard, log, atau status file untuk hasil sebenarnya. `--check` mengembalikan `1` bila ada masalah koneksi/config.
 
 ### Log dan status file
 
@@ -584,7 +591,7 @@ juga terlihat di:
 - halaman **Config** dashboard dan kartu site di **Overview**;
 - kolom `version` pada tabel `_rep_<site>.agent`.
 
-Versi saat ini: **agent 1.1.0**, **installer 1.1.0**, **dashboard 2.0.0**.
+Versi saat ini: **agent 1.2.0**, **installer 1.2.0**, **dashboard 2.0.0**.
 Panduan update dan rollback: [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md).
 
 ---
@@ -756,8 +763,17 @@ Mode darurat tetap aktif dan dicoba lagi setelah grant diperbaiki.
 
 ### Mode darurat aktif terus setelah update
 
-File `config\failback.armed` tersisa dari sesi sebelumnya. Matikan lewat tray
-(**Matikan mode darurat**) atau:
+File `config\failback.armed` atau `config\failback.pending` tersisa dari sesi
+sebelumnya. Penanda `armed` berarti mode darurat belum selesai; penanda
+`pending` berarti replikasi balik sudah selesai dan menunggu konfirmasi. Bila
+data sudah diverifikasi, mulai replikasi maju lewat tray (**Mulai replikasi
+maju**) atau:
+
+```powershell
+.\replicator-agent.exe --resume-forward --config .\config\agent.ini
+```
+
+Untuk membatalkan semuanya tanpa replikasi balik:
 
 ```powershell
 .\replicator-agent.exe --disarm-failback --config .\config\agent.ini
@@ -769,7 +785,8 @@ File `config\failback.armed` tersisa dari sesi sebelumnya. Matikan lewat tray
 
 - Replikasi berbasis polling, bukan binlog/GTID. Jeda minimum `[sync] interval_sec` adalah 5 detik.
 - Mode darurat hanya menyalin **satu arah** backup → master saat master hidup lagi; bukan replikasi dua arah bersamaan.
-- Replikasi balik menimpa data master, jadi hanya aman bila master tidak menerima tulisan selama gangguan.
+- Replikasi balik hanya menyalin tabel yang terdeteksi berbeda, lalu menunggu konfirmasi manual sebelum replikasi maju berjalan lagi.
+- Replikasi balik menimpa tabel yang berbeda di master, jadi hanya aman bila master tidak menerima tulisan selama gangguan.
 - Deteksi DELETE bergantung pada verifikasi checksum berkala; bukan real-time.
 - Tabel tanpa primary key/unique key tidak dapat di-upsert secara inkremental.
 - Perubahan struktur yang kompleks (rename kolom, perubahan tipe) dapat memerlukan full load/recreate.

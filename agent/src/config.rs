@@ -112,6 +112,9 @@ pub struct Config {
     pub backup: DbCfg,
     pub create_database: bool,
     pub sync: SyncCfg,
+    /// Batasi satu siklus ke tabel tertentu (dipakai replikasi balik yang hanya
+    /// menyalin tabel yang berbeda). `None` = semua tabel sesuai filter sync.
+    pub only_tables: Option<Vec<String>>,
     pub verify: VerifyCfg,
     pub status: StatusCfg,
     pub notify: NotifyCfg,
@@ -280,6 +283,7 @@ impl Config {
             backup,
             create_database,
             sync,
+            only_tables: None,
             verify,
             status,
             notify,

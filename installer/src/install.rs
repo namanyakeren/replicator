@@ -607,11 +607,14 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
          Dipakai bila master mati dan backup dipakai sebagai database utama:\r\n\
          1. Klik kanan ikon R, pilih \"Aktifkan mode darurat\".\r\n\
          2. Replikasi master -> backup dijeda; agent menunggu master hidup kembali.\r\n\
-         3. Setelah master hidup terus 120 detik, agent menyalin PENUH backup -> master.\r\n\
-         4. Bila berhasil, mode darurat mati otomatis dan replikasi kembali normal.\r\n\
-         PERINGATAN: data di master akan DITIMPA data backup. Pastikan master\r\n\
-         memang tidak dipakai menulis selama gangguan. Mode darurat juga bisa\r\n\
-         diaktifkan dari command line: replicator-agent --arm-failback\r\n\r\n\
+         3. Setelah master hidup terus 120 detik, agent MEMBANDINGKAN data backup\r\n\
+         \x20  dengan master dan hanya menyalin balik tabel yang berbeda.\r\n\
+         4. Setelah selesai status menjadi PENDING. Verifikasi data master, lalu\r\n\
+         \x20  klik kanan ikon R dan pilih \"Mulai replikasi maju\" agar replikasi\r\n\
+         \x20  normal master -> backup berjalan lagi.\r\n\
+         PERINGATAN: tabel yang berbeda di master akan DITIMPA data backup.\r\n\
+         Pastikan master memang tidak dipakai menulis selama gangguan.\r\n\
+         Dari command line: --arm-failback, --failback, --resume-forward.\r\n\r\n\
          Jika ikon belum muncul, klik dua kali file Mulai Agent.vbs di folder ini.\r\n\r\n\
          Lokasi file:\r\n\
          - Program : {exe}\r\n\
@@ -626,7 +629,7 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
         },
         agent_version = AGENT_VERSION,
         failback_status = if input.failback_enabled {
-            "aktif (otomatis setelah master hidup)"
+            "aktif (konfirmasi manual setelah replikasi balik)"
         } else {
             "nonaktif"
         },

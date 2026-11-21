@@ -177,7 +177,8 @@ D:\replicator\
 ├─ install.log              # log langkah instalasi
 ├─ config\
 │  ├─ agent.ini             # dibuat otomatis
-│  └─ failback.armed        # hanya ada saat mode darurat aktif
+│  ├─ failback.armed        # hanya ada saat mode darurat aktif
+│  └─ failback.pending      # replikasi balik selesai, menunggu konfirmasi
 └─ logs\
    ├─ agent.log
    └─ status.json
@@ -303,17 +304,31 @@ Alur:
 2. Replikasi maju (master → backup) **dijeda**. Agent menulis status `armed` dan
    terus mengirim heartbeat, jadi dashboard menampilkan **Mode darurat**.
 3. Saat master bisa dijangkau terus selama `[failback] after_sec` (default 120
-   detik), agent menjalankan **full load backup → master**.
-4. Bila berhasil, penanda darurat dihapus dan replikasi maju kembali normal.
-5. Bila gagal, mode darurat tetap aktif dan agent mencoba lagi. Periksa
+   detik), agent **membandingkan** isi backup dengan master lebih dulu. Tabel
+   yang strukturnya sama dan isinya identik tidak disentuh.
+4. Hanya tabel yang **berbeda** yang disalin balik (backup → master). Bila
+   tidak ada perbedaan sama sekali, penyalinan dilewati.
+5. Setelah selesai, status menjadi **PENDING**. Replikasi maju **tidak** otomatis
+   berjalan. Verifikasi data master terlebih dahulu.
+6. Setelah yakin, klik kanan ikon **R** → **Mulai replikasi maju**
+   (`--resume-forward`). Baru setelah itu replikasi normal master → backup
+   berjalan lagi.
+7. Bila gagal, mode darurat tetap aktif dan agent mencoba lagi. Periksa
    `agent.log` dan pesan di dashboard/tray.
 
 Menu tray saat mode darurat aktif:
 
 | Aksi | Hasil |
 |---|---|
-| **Sinkronkan balik sekarang** | Menjalankan replikasi balik secepatnya (tetap menunggu master bisa dijangkau). |
+| **Sinkronkan balik sekarang** | Menjalankan perbandingan dan replikasi balik secepatnya (tetap menunggu master bisa dijangkau). |
 | **Matikan mode darurat** | Membatalkan mode darurat tanpa menjalankan replikasi balik. |
+
+Menu tray saat status **pending**:
+
+| Aksi | Hasil |
+|---|---|
+| **Mulai replikasi maju (master -> backup)** | Menghapus status pending dan mengizinkan replikasi normal berjalan lagi. |
+| **Batalkan pending dan lanjutkan** | Sama seperti di atas, dengan konfirmasi. |
 
 Perintah manual:
 
@@ -321,18 +336,27 @@ Perintah manual:
 # Aktifkan mode darurat (replikasi maju dijeda)
 .\replicator-agent.exe --config .\config\agent.ini --arm-failback
 
-# Jalankan replikasi balik satu kali sekarang
+# Bandingkan lalu replikasi balik tabel yang berbeda (backup -> master)
 .\replicator-agent.exe --config .\config\agent.ini --failback
 
-# Batalkan mode darurat tanpa replikasi balik
+# Setujui hasil failback dan mulai replikasi maju
+.\replicator-agent.exe --config .\config\agent.ini --resume-forward
+
+# Batalkan mode darurat/pending tanpa replikasi balik
 .\replicator-agent.exe --config .\config\agent.ini --disarm-failback
 ```
 
-> **PERINGATAN:** replikasi balik **menimpa** data master dengan data backup.
-> Aktifkan hanya bila master benar-benar tidak dipakai menulis selama gangguan.
-> Saat mode darurat aktif, jangan menulis ke master sampai proses selesai.
+> **PERINGATAN:** replikasi balik **menimpa tabel yang berbeda di master**
+> dengan data backup. Aktifkan hanya bila master benar-benar tidak dipakai
+> menulis selama gangguan. Saat mode darurat aktif, jangan menulis ke master
+> sampai proses selesai.
 > Bila `[failback] auto = "false"`, agent menunggu perintah operator dan tidak
 > menjalankan replikasi balik sendiri.
+
+Agent membuat dua penanda di folder `config`: `failback.armed` saat mode
+darurat aktif dan `failback.pending` setelah replikasi balik selesai. Jangan
+menghapus `failback.pending` secara manual kecuali Anda sudah memverifikasi
+data; menghapusnya sama dengan menekan **Mulai replikasi maju**.
 
 Menjalankan launcher lagi saat agent sudah hidup **tidak** membuka dua proses.
 Instance kedua hanya membuka jendela monitor milik agent yang sedang berjalan.
@@ -366,7 +390,9 @@ Hentikan agent dari tray terlebih dahulu (klik kanan → Hentikan agent), lalu:
 ```
 
 `--once` menjalankan satu siklus penuh lalu keluar. Kode keluar `0` berarti siklus
-selesai — termasuk bila sebagian tabel gagal; periksa pesan dan log untuk detail.
+selesai - termasuk bila sebagian tabel gagal; periksa pesan dan log untuk detail.
+Bila status failback masih **PENDING**, `--once` tidak menjalankan replikasi maju
+dan mengembalikan kode keluar `1`.
 
 ### 7.3 Lihat hasil
 
@@ -674,7 +700,7 @@ installer versi lama, kolom baru pada schema status (mis. `direction` dan
 | Perintah | Kode `0` | Kode `1` |
 |---|---|---|
 | `--check` | Config dan koneksi siap | Ada masalah config/koneksi |
-| `--once` | Siklus selesai | Gagal fatal sebelum siklus selesai |
+| `--once` | Siklus selesai | Gagal fatal, atau status failback masih PENDING |
 | installer `--silent` | Instalasi berhasil | Instalasi gagal |
 
 ### Lokasi log

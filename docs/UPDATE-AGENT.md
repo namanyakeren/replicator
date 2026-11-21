@@ -37,8 +37,8 @@ dist/
 ```text
 Replicator - daftar artefak rilis
 Dibuat      : 2026-11-19 10:00:00
-Agent       : 1.1.0
-Installer   : 1.1.0
+Agent       : 1.2.0
+Installer   : 1.2.0
 
 File di folder dist/:
   replicator-agent.exe  ... byte  SHA256 ...
@@ -66,8 +66,9 @@ $dir = "D:\replicator"
 & "$dir\replicator-agent.exe" --version
 Get-Content "$dir\config\agent.ini" | Select-String -Pattern 'enabled|auto|after_sec'
 
-# 2. Pastikan mode darurat tidak aktif
+# 2. Pastikan mode darurat dan status pending tidak aktif
 Test-Path "$dir\config\failback.armed"
+Test-Path "$dir\config\failback.pending"
 
 # 3. Simpan binary dan config lama untuk rollback
 Copy-Item "$dir\replicator-agent.exe" "$dir\replicator-agent.exe.bak" -Force
@@ -185,7 +186,7 @@ Ganti `_rep_jakarta` sesuai schema site.
 
 ## 6. Update grant MySQL untuk failback
 
-Agent 1.1.0 bisa menyalin balik **backup → master** saat mode darurat. Ini
+Agent 1.2.0 bisa menyalin balik **backup → master** saat mode darurat. Ini
 membutuhkan hak tulis di database master. Installer versi 1.1.0 ke atas sudah
 mengaturnya otomatis.
 
@@ -233,6 +234,9 @@ bila perlu.
   tetap ada setelah rollback dan diabaikan oleh agent versi lama.
 - File `config\failback.armed` boleh dihapus manual bila ingin memastikan mode
   darurat tidak aktif setelah rollback.
+- File `config\failback.pending` berarti replikasi balik sudah selesai dan
+  replikasi maju dijeda. Setujui lewat tray/**Mulai replikasi maju** atau
+  `--resume-forward`; jangan menghapusnya sebelum data diverifikasi.
 
 ---
 
@@ -240,6 +244,7 @@ bila perlu.
 
 | Versi | Perubahan utama |
 |---|---|
+| `1.2.0` | Failback membandingkan backup vs master dan hanya menyalin tabel yang berbeda; status **pending** setelah replikasi balik sampai operator memilih **Mulai replikasi maju** (`--resume-forward`). |
 | `1.1.0` | Mode darurat/failback (backup → master), kolom arah & failback pada status, versi agent di tray/installer/dashboard, manifest `dist/VERSIONS.txt`. |
 | `1.0.0` | Rilis awal: replikasi master → backup, installer satu file, tray, monitor, autostart, uninstall. |
 
@@ -253,6 +258,7 @@ bila perlu.
 | Ikon tray tidak muncul setelah update | Launcher tidak dijalankan | Klik dua kali `Mulai Agent.vbs`, cek `logs\agent.log`. |
 | Dashboard tetap menampilkan versi lama | Heartbeat belum diperbarui | Tunggu satu siklus / refresh; cek `_rep.<site>.agent.version`. |
 | Mode darurat langsung aktif setelah update | File `config\failback.armed` tersisa | Matikan lewat tray atau `--disarm-failback`. |
+| Replikasi maju tidak jalan setelah failback | Status **pending** menunggu konfirmasi | Verifikasi data lalu pilih **Mulai replikasi maju** atau `--resume-forward`. |
 | Installer berhenti di tengah | Agent masih berjalan / antivirus | Hentikan agent, nonaktifkan sementara antivirus, ulangi. |
 | Failback gagal `Access denied` | Grant master masih read-only | Jalankan grant pada bagian 6. |
 | Hash file tidak cocok | Unduhan korup | Bandingkan dengan `dist\VERSIONS.txt`, unduh ulang. |

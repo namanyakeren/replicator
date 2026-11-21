@@ -79,9 +79,15 @@ pub fn run_cycle(
 
     let all_tables = db::table_names(&mut master, &cfg.master.database)
         .map_err(|e| format!("gagal membaca daftar tabel master: {}", e))?;
+    let only = cfg.only_tables.as_ref();
     let selected: Vec<String> = all_tables
         .into_iter()
         .filter(|table| cfg.sync.table_selected(table))
+        .filter(|table| {
+            only.map_or(true, |list| {
+                list.iter().any(|name| name.eq_ignore_ascii_case(table))
+            })
+        })
         .collect();
 
     let mut stats = CycleStats {
@@ -163,6 +169,188 @@ pub fn run_cycle(
         backup_now,
         clock_skew_sec,
     })
+}
+
+/// Hasil perbandingan satu tabel. `source` adalah sisi yang akan disalin
+/// (pada replikasi balik: backup) dan `target` adalah tujuan (master).
+#[derive(Clone, Debug)]
+pub struct TableCompare {
+    pub table: String,
+    pub source_rows: u64,
+    pub target_rows: u64,
+    pub changed: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CompareOutcome {
+    pub tables: Vec<TableCompare>,
+    /// Tabel sumber yang isi/strukturnya berbeda dari tujuan.
+    pub changed: Vec<String>,
+    /// Tabel yang hanya ada di tujuan; tidak ikut disalin balik.
+    pub target_only: Vec<String>,
+    pub duration_ms: u64,
+}
+
+impl CompareOutcome {
+    pub fn has_changes(&self) -> bool {
+        !self.changed.is_empty()
+    }
+
+    pub fn summary(&self) -> String {
+        let unchanged = self.tables.len().saturating_sub(self.changed.len());
+        let mut text = format!(
+            "{} tabel diperiksa: {} berbeda, {} sama",
+            self.tables.len(),
+            self.changed.len(),
+            unchanged
+        );
+        if !self.target_only.is_empty() {
+            text.push_str(&format!(
+                ", {} tabel hanya ada di tujuan",
+                self.target_only.len()
+            ));
+        }
+        text
+    }
+}
+
+/// Bandingkan isi database sumber (`cfg.master`) dengan tujuan (`cfg.backup`)
+/// tanpa menulis apa pun. Dipakai sebelum replikasi balik agar penyalinan
+/// dilewati bila backup tidak memiliki perubahan.
+///
+/// Perbandingan memakai jumlah baris + fingerprint CRC32 per tabel
+/// (`db::fingerprint`), sehingga hasilnya tidak bergantung pada urutan fisik
+/// baris. Bila struktur tabel berbeda, tabel langsung dianggap berbeda.
+pub fn compare_cycle(cfg: &Config, logger: &Logger) -> Result<CompareOutcome, String> {
+    let started = Instant::now();
+    let mut source = db::connect(&cfg.master, true, logger)?;
+    let mut target = match db::connect(&cfg.backup, true, logger) {
+        Ok(conn) => Some(conn),
+        Err(error) if db::is_unknown_database(&error) => None,
+        Err(error) => return Err(error),
+    };
+
+    let only = cfg.only_tables.as_ref();
+    let source_tables: Vec<String> = db::table_names(&mut source, &cfg.master.database)?
+        .into_iter()
+        .filter(|table| cfg.sync.table_selected(table))
+        .filter(|table| {
+            only.map_or(true, |list| {
+                list.iter().any(|name| name.eq_ignore_ascii_case(table))
+            })
+        })
+        .collect();
+
+    let target_tables = match &mut target {
+        Some(conn) => db::table_names(conn, &cfg.backup.database)?,
+        None => Vec::new(),
+    };
+
+    let mut outcome = CompareOutcome::default();
+
+    for table in &source_tables {
+        let target_exists = target_tables
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(table));
+        if !target_exists {
+            outcome.changed.push(table.clone());
+            outcome.tables.push(TableCompare {
+                table: table.clone(),
+                source_rows: 0,
+                target_rows: 0,
+                changed: true,
+                detail: "tabel belum ada di tujuan".to_string(),
+            });
+            logger.warn(&format!(
+                "perbandingan: tabel {} belum ada di tujuan (akan dibuat)",
+                table
+            ));
+            continue;
+        }
+
+        let target_conn = target
+            .as_mut()
+            .ok_or_else(|| "koneksi tujuan tidak tersedia".to_string())?;
+        let source_columns = db::columns(&mut source, &cfg.master.database, table)?;
+        if source_columns.is_empty() {
+            return Err(format!("tabel {} tidak memiliki kolom yang terbaca", table));
+        }
+        let target_columns = db::columns(target_conn, &cfg.backup.database, table)?;
+        let (missing, changed_types, extra) = diff_columns(&source_columns, &target_columns);
+        if !missing.is_empty() || !changed_types.is_empty() || !extra.is_empty() {
+            let mut reasons: Vec<String> = Vec::new();
+            if !missing.is_empty() {
+                reasons.push(format!("hilang di tujuan: {}", missing.join(", ")));
+            }
+            if !changed_types.is_empty() {
+                reasons.push(format!("tipe berubah: {}", changed_types.join(", ")));
+            }
+            if !extra.is_empty() {
+                reasons.push(format!("ekstra di tujuan: {}", extra.join(", ")));
+            }
+            outcome.changed.push(table.clone());
+            outcome.tables.push(TableCompare {
+                table: table.clone(),
+                source_rows: 0,
+                target_rows: 0,
+                changed: true,
+                detail: format!("struktur tabel berbeda ({})", reasons.join("; ")),
+            });
+            continue;
+        }
+
+        let insert_columns: Vec<Column> = source_columns
+            .iter()
+            .filter(|column| column.insertable())
+            .cloned()
+            .collect();
+        let (source_rows, source_crc) =
+            db::fingerprint(&mut source, table, &insert_columns)?;
+        let (target_rows, target_crc) =
+            db::fingerprint(target_conn, table, &insert_columns)?;
+        let changed = source_rows != target_rows || source_crc != target_crc;
+
+        if changed {
+            outcome.changed.push(table.clone());
+            let detail = if source_rows != target_rows {
+                format!(
+                    "jumlah baris berbeda (sumber {} vs tujuan {})",
+                    source_rows, target_rows
+                )
+            } else {
+                "isi baris berbeda (jumlah baris sama)".to_string()
+            };
+            outcome.tables.push(TableCompare {
+                table: table.clone(),
+                source_rows,
+                target_rows,
+                changed: true,
+                detail,
+            });
+        } else {
+            outcome.tables.push(TableCompare {
+                table: table.clone(),
+                source_rows,
+                target_rows,
+                changed: false,
+                detail: "sama".to_string(),
+            });
+        }
+    }
+
+    outcome.target_only = target_tables
+        .into_iter()
+        .filter(|table| cfg.sync.table_selected(table))
+        .filter(|table| {
+            !source_tables
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(table))
+        })
+        .collect();
+
+    outcome.duration_ms = started.elapsed().as_millis() as u64;
+    Ok(outcome)
 }
 
 struct ProgressCtx<'a> {

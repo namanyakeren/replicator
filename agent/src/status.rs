@@ -248,12 +248,13 @@ impl StatusDb {
         });
     }
 
-    /// Replikasi balik selesai: matikan mode darurat dan kembali normal.
-    pub fn mark_failback_done(&mut self, message: &str, next_run_sec: u64) {
+    /// Replikasi balik selesai tetapi replikasi maju belum boleh berjalan.
+    /// Operator harus memverifikasi data lalu memilih "Mulai replikasi maju".
+    pub fn mark_failback_pending(&mut self, message: &str, next_run_sec: u64) {
         let schema = self.schema.clone();
         let sql = format!(
-            "UPDATE {}.agent SET state='ok', heartbeat_at=NOW(), cycle_finished_at=NOW(), \
-             direction='forward', failback_armed=0, failback_state='done', failback_message=?, \
+            "UPDATE {}.agent SET state='pending', heartbeat_at=NOW(), cycle_finished_at=NOW(), \
+             direction='forward', failback_armed=0, failback_state='pending', failback_message=?, \
              failback_last_at=NOW(), consecutive_errors=0, last_error=NULL, last_error_at=NULL, \
              next_run_at=FROM_UNIXTIME(UNIX_TIMESTAMP(NOW()) + ?) WHERE id=1",
             quote_ident(&schema)
@@ -262,7 +263,7 @@ impl StatusDb {
             text(&truncate_chars(message, 500)),
             num(next_run_sec),
         ];
-        self.run("mark_failback_done", move |conn| {
+        self.run("mark_failback_pending", move |conn| {
             conn.exec_drop(&sql, params.clone())
         });
     }

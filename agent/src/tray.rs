@@ -66,6 +66,7 @@ const ID_MONITOR: usize = 105;
 const ID_ARM_FAILBACK: usize = 106;
 const ID_DISARM_FAILBACK: usize = 107;
 const ID_FAILBACK_NOW: usize = 108;
+const ID_RESUME_FORWARD: usize = 109;
 
 const COLOR_OK: u32 = 0x002E7D32;
 const COLOR_WARN: u32 = 0x00008AA5;
@@ -408,7 +409,17 @@ unsafe fn show_menu(hwnd: HWND) {
     );
 
     if ctx.options.failback_enabled {
-        if snap.failback_armed {
+        if snap.failback_pending {
+            let resume_w = to_wide("Mulai replikasi maju (master -> backup)");
+            let disarm_w = to_wide("Batalkan pending dan lanjutkan");
+            AppendMenuW(
+                menu,
+                MF_STRING | if paused { MF_GRAYED } else { 0 },
+                ID_RESUME_FORWARD,
+                resume_w.as_ptr(),
+            );
+            AppendMenuW(menu, MF_STRING, ID_DISARM_FAILBACK, disarm_w.as_ptr());
+        } else if snap.failback_armed {
             let now_w = to_wide("Sinkronkan balik sekarang (backup -> master)");
             let disarm_w = to_wide("Matikan mode darurat");
             AppendMenuW(
@@ -535,16 +546,61 @@ unsafe fn perform_command(hwnd: HWND, command: usize) {
             }
             refresh_icon(hwnd);
         }
-        ID_DISARM_FAILBACK => {
+        ID_RESUME_FORWARD => {
             if confirm(
-                "Matikan mode darurat?\n\nReplikasi maju master -> backup akan dilanjutkan. \
-                 Replikasi balik tidak dijalankan sampai mode darurat diaktifkan lagi.",
-                "Matikan mode darurat",
+                "Mulai replikasi maju master -> backup?\n\n\
+                 Pastikan data master sudah diverifikasi dan aplikasi sudah kembali \
+                 memakai master. Setelah ini agent menjalankan replikasi normal \
+                 master -> backup.",
+                "Mulai replikasi maju",
             ) {
+                match ctx.options.failback.resume_forward() {
+                    Ok(_) => {
+                        ctx.logger.info(
+                            "tray: status pending disetujui, replikasi maju dilanjutkan",
+                        );
+                        if let Ok(mut ui) = ctx.ui.lock() {
+                            ui.failback_pending = false;
+                            ui.failback_armed = false;
+                            ui.failback_state = "off".to_string();
+                            ui.direction = "forward".to_string();
+                            ui.state = "idle".to_string();
+                            ui.phase.clear();
+                            ui.current_table.clear();
+                            ui.message =
+                                "Status pending disetujui. Replikasi maju dilanjutkan."
+                                    .to_string();
+                            ui.updated = Some(Instant::now());
+                        }
+                    }
+                    Err(error) => message_box(
+                        &format!("Tidak bisa memulai replikasi maju:\n{}", error),
+                        "Replicator",
+                    ),
+                }
+            }
+            refresh_icon(hwnd);
+        }
+        ID_DISARM_FAILBACK => {
+            let pending = ctx
+                .ui
+                .lock()
+                .map(|ui| ui.failback_pending)
+                .unwrap_or(false);
+            let text = if pending {
+                "Batalkan pending dan lanjutkan replikasi maju?\n\n\
+                 Pastikan data master sudah diverifikasi. Replikasi maju akan berjalan \
+                 otomatis pada siklus berikutnya."
+            } else {
+                "Matikan mode darurat?\n\nReplikasi maju master -> backup akan dilanjutkan. \
+                 Replikasi balik tidak dijalankan sampai mode darurat diaktifkan lagi."
+            };
+            if confirm(text, "Matikan mode darurat") {
                 match ctx.options.failback.disarm() {
                     Ok(was_armed) => {
-                        ctx.logger.info("tray: mode darurat dimatikan oleh pengguna");
+                        ctx.logger.info("tray: mode darurat/pending dimatikan oleh pengguna");
                         if let Ok(mut ui) = ctx.ui.lock() {
+                            ui.failback_pending = false;
                             ui.failback_armed = false;
                             ui.failback_state = "off".to_string();
                             ui.direction = "forward".to_string();
@@ -688,7 +744,9 @@ unsafe fn paint_monitor(hwnd: HWND) {
         "Monitor Replikasi",
         COLOR_TEXT,
     );
-    let mode = if snap.failback_armed {
+    let mode = if snap.failback_pending {
+        "Pending"
+    } else if snap.failback_armed {
         "Darurat"
     } else {
         "Normal"
@@ -970,7 +1028,9 @@ fn tooltip() -> String {
     } else {
         state_label(&snap.state)
     };
-    let mode = if snap.failback_armed {
+    let mode = if snap.failback_pending {
+        "PENDING"
+    } else if snap.failback_armed {
         "DARURAT"
     } else {
         "normal"
@@ -997,7 +1057,7 @@ fn tooltip() -> String {
 fn icon_kind(state: &str) -> usize {
     match state {
         "error" => 2,
-        "warning" | "partial" | "armed" => 1,
+        "warning" | "partial" | "armed" | "pending" => 1,
         "ok" | "syncing" => 0,
         _ => 3,
     }
@@ -1010,6 +1070,7 @@ fn state_label(state: &str) -> &'static str {
         "partial" => "Sebagian gagal",
         "error" => "Error",
         "armed" => "Mode darurat",
+        "pending" => "Menunggu konfirmasi",
         "paused" => "Berhenti",
         "syncing" => "Mereplikasi",
         "idle" => "Menunggu",
@@ -1029,6 +1090,9 @@ fn direction_label(direction: &str) -> &'static str {
 fn mode_line(snap: &UiState, options: &TrayOptions) -> String {
     if !options.failback_enabled {
         return "Mode darurat: tidak diaktifkan di config".to_string();
+    }
+    if snap.failback_pending {
+        return "Mode pending: verifikasi manual, replikasi maju dijeda".to_string();
     }
     if !snap.failback_armed {
         return "Mode darurat: normal".to_string();

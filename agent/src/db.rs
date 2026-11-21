@@ -122,7 +122,7 @@ pub fn connect_and_create(cfg: &DbCfg, create: bool, logger: &Logger) -> Result<
     }
 }
 
-fn is_unknown_database(error: &str) -> bool {
+pub fn is_unknown_database(error: &str) -> bool {
     error.contains("1049") || error.contains("Unknown database")
 }
 

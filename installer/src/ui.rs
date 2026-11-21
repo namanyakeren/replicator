@@ -807,8 +807,10 @@ fn success_text(report: &install::InstallReport) -> String {
     if report.failback_enabled {
         text.push_str(
             "MODE DARURAT: klik kanan ikon R lalu pilih \"Aktifkan mode darurat\" bila\n\
-             master mati dan backup dipakai sebagai database utama. Agent akan menyalin\n\
-             PENUH backup -> master setelah master hidup kembali, lalu kembali normal.\n\n",
+             master mati dan backup dipakai sebagai database utama. Setelah master hidup,\n\
+             agent membandingkan data dan hanya menyalin balik tabel yang berbeda.\n\
+             Setelah itu status menjadi PENDING: verifikasi data master, lalu pilih\n\
+             \"Mulai replikasi maju\" agar replikasi normal berjalan lagi.\n\n",
         );
     }
     text.push_str(
