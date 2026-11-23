@@ -97,6 +97,8 @@ struct Cli {
     no_autostart: bool,
     no_start: bool,
     no_failback: bool,
+    dashboard_url: Option<String>,
+    dashboard_token: Option<String>,
 }
 
 impl Cli {
@@ -139,6 +141,8 @@ impl Cli {
                 "--no-autostart" => cli.no_autostart = true,
                 "--no-start" => cli.no_start = true,
                 "--no-failback" => cli.no_failback = true,
+                "--dashboard-url" => cli.dashboard_url = Some(value("--dashboard-url")?),
+                "--dashboard-token" => cli.dashboard_token = Some(value("--dashboard-token")?),
                 other => return Err(format!("Opsi tidak dikenal: {}\n\n{}", other, help_text())),
             }
             index += 1;
@@ -206,6 +210,12 @@ impl Cli {
         input.autostart = !self.no_autostart;
         input.start_now = !self.no_start;
         input.failback_enabled = !self.no_failback;
+        if let Some(url) = &self.dashboard_url {
+            input.dashboard_url = url.trim().to_string();
+        }
+        if let Some(token) = &self.dashboard_token {
+            input.dashboard_token = token.trim().to_string();
+        }
         Ok(input)
     }
 }
@@ -242,18 +252,25 @@ fn help_text() -> String {
            --agent-password <pass>   Password user agent (otomatis bila kosong)\n\
            --skip-db-setup           Jangan buat user/grant/database\n\
            --no-failback             Nonaktifkan mode darurat (failback)\n\
+           --dashboard-url <url>     Endpoint ingest dashboard (opsional)\n\
+           --dashboard-token <token> Token agent untuk dashboard\n\
            --no-autostart            Jangan jalankan otomatis saat login\n\
            --no-start                Jangan jalankan agent setelah selesai\n\
            --dir <folder>            Folder instalasi (default D:\\replicator)\n\
            --uninstall               Hapus agent dan autostart\n\
            --help                    Tampilkan bantuan ini\n\
            --version                 Tampilkan versi installer dan agent\n\n\
+         Dashboard (opsional):\n\
+           --dashboard-url https://monitor.contoh/api.php?action=ingest \\\n\
+           --dashboard-token <token-dari-halaman-site>\n\n\
          Failback (mode darurat) aktif secara default: agent diberi hak tulis di\n\
          master agar bisa menyalin balik backup -> master saat master hidup lagi.\n\n\
          Contoh:\n\
            replicator-setup.exe --silent --master-host 192.168.101.11 \\\n\
              --backup-host 192.168.101.12 --site Jakarta \\\n\
-             --admin-password RahasiaAdmin --agent-password RahasiaAgent",
+             --admin-password RahasiaAdmin --agent-password RahasiaAgent \\\n\
+             --dashboard-url https://monitor.contoh/api.php?action=ingest \\\n\
+             --dashboard-token token-rahasia-site",
         VERSION, AGENT_VERSION
     )
 }

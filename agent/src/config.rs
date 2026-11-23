@@ -88,6 +88,28 @@ pub struct NotifyCfg {
     pub cooldown_sec: u64,
 }
 
+/// Laporan status yang dikirim agent ke dashboard (push monitoring).
+#[derive(Clone, Debug)]
+pub struct MonitorCfg {
+    pub enabled: bool,
+    /// URL endpoint ingest, misalnya https://monitor.example/api.php?action=ingest
+    pub url: String,
+    /// Token per site. Dikirim lewat header Authorization: Bearer.
+    pub token: String,
+    pub interval_sec: u64,
+    /// Ukuran database dihitung ulang paling sering setiap N detik.
+    pub size_refresh_sec: u64,
+    pub timeout_sec: u64,
+    /// Salinan laporan terakhir untuk diagnosa lokal. None = tidak ditulis.
+    pub report_file: Option<PathBuf>,
+}
+
+impl MonitorCfg {
+    pub fn remote(&self) -> bool {
+        self.enabled && !self.url.is_empty()
+    }
+}
+
 /// Replikasi balik (failback): menyalin data dari backup ke master setelah
 /// master hidup lagi. Hanya berjalan bila diaktifkan dan di-arm oleh operator.
 #[derive(Clone, Debug)]
@@ -119,6 +141,7 @@ pub struct Config {
     pub status: StatusCfg,
     pub notify: NotifyCfg,
     pub failback: FailbackCfg,
+    pub monitor: MonitorCfg,
 }
 
 impl Config {
@@ -263,6 +286,55 @@ impl Config {
             state_file: failback_state_file,
         };
 
+        let monitor_url = reader.string("monitor", "url", "");
+        let monitor_token = reader.string("monitor", "token", "");
+        let monitor_enabled = reader.boolean("monitor", "enabled", false) || !monitor_url.is_empty();
+        if monitor_enabled {
+            if monitor_url.is_empty() {
+                reader.errors.push(
+                    "monitor.enabled=true tetapi monitor.url belum diisi".to_string(),
+                );
+            } else if !(monitor_url.starts_with("http://")
+                || monitor_url.starts_with("https://"))
+                || monitor_url.len() > 512
+                || monitor_url.chars().any(char::is_whitespace)
+            {
+                reader.errors.push(
+                    "monitor.url harus diawali http:// atau https://, tanpa spasi, maksimal 512 karakter"
+                        .to_string(),
+                );
+            }
+            if monitor_token.is_empty() {
+                reader.errors.push(
+                    "monitor.token wajib diisi bila dashboard dipakai".to_string(),
+                );
+            } else if monitor_token.len() > 256
+                || monitor_token.len() < 8
+                || monitor_token.chars().any(|c| c.is_control() || c.is_whitespace())
+            {
+                reader.errors.push(
+                    "monitor.token harus 8-256 karakter tanpa spasi".to_string(),
+                );
+            }
+        }
+        let report_file_raw = reader.string("monitor", "report_file", "logs/report.json");
+        let report_file = if report_file_raw.trim().is_empty() {
+            None
+        } else {
+            Some(resolve_path(&base_dir, &report_file_raw))
+        };
+        let monitor = MonitorCfg {
+            enabled: monitor_enabled,
+            url: monitor_url,
+            token: monitor_token,
+            interval_sec: reader.u64("monitor", "interval_sec", 60).clamp(15, 3600),
+            size_refresh_sec: reader
+                .u64("monitor", "size_refresh_sec", 300)
+                .clamp(60, 86_400),
+            timeout_sec: reader.u64("monitor", "timeout_sec", 5).clamp(1, 60),
+            report_file,
+        };
+
         if !reader.errors.is_empty() {
             let mut message = String::from("konfigurasi tidak valid:");
             for error in &reader.errors {
@@ -288,6 +360,7 @@ impl Config {
             status,
             notify,
             failback,
+            monitor,
         })
     }
 
@@ -300,7 +373,7 @@ impl Config {
             None => format!("{}/{} (backup)", self.backup.host, self.status.schema),
         };
         format!(
-            "master={}:{}/{} backup={}:{}/{} include=[{}] exclude=[{}] interval={}s verify={}s failback={} status={}",
+            "master={}:{}/{} backup={}:{}/{} include=[{}] exclude=[{}] interval={}s verify={}s failback={} status={} monitor={}",
             self.master.host,
             self.master.port,
             self.master.database,
@@ -324,7 +397,12 @@ impl Config {
             } else {
                 "off".to_string()
             },
-            status_target
+            status_target,
+            if self.monitor.enabled {
+                format!("{}s -> {}", self.monitor.interval_sec, self.monitor.url)
+            } else {
+                "off".to_string()
+            }
         )
     }
 
@@ -361,6 +439,18 @@ impl Config {
             self.failback.auto,
             self.failback.after_sec,
             self.failback.state_file.display()
+        ));
+        text.push_str(&format!(
+            "\nmonitor_enabled={} interval_sec={} size_refresh_sec={} url={} token={}",
+            self.monitor.enabled,
+            self.monitor.interval_sec,
+            self.monitor.size_refresh_sec,
+            if self.monitor.url.is_empty() {
+                "(kosong)"
+            } else {
+                self.monitor.url.as_str()
+            },
+            mask_secret(&self.monitor.token)
         ));
         text
     }

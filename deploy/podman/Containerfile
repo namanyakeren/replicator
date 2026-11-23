@@ -1,8 +1,8 @@
 FROM php:8.2-apache
 
 RUN docker-php-ext-install pdo_mysql \
-    && mkdir -p /var/www/config \
-    && chown www-data:www-data /var/www/config
+    && mkdir -p /var/www/config /var/www/data \
+    && chown www-data:www-data /var/www/config /var/www/data
 COPY dashboard/ /var/www/html/
 COPY config/config.php /var/www/replicator-config.php
 

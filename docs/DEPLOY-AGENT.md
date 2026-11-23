@@ -1,8 +1,9 @@
 # Tutorial Deploy Agent Replicator (Windows 7–11)
 
 Panduan ini memasang **agent** di satu site: menyalin data dari MySQL master ke
-MySQL backup, lalu menulis status/heartbeat ke schema `_rep` agar terbaca oleh
-dashboard.
+MySQL backup, lalu **mengirim laporan JSON** ke dashboard (push monitoring).
+Dashboard tidak lagi membuka koneksi ke MySQL site; ia hanya menerima laporan
+dari agent.
 
 Satu site = **satu IP master** + **satu IP backup**. Agent dijalankan di komputer
 Windows yang bisa menjangkau kedua database.
@@ -33,22 +34,24 @@ Windows yang bisa menjangkau kedua database.
 
 ```text
 Master MySQL (.11)  ──baca──►  Agent (Windows)  ──tulis──►  Backup MySQL (.12)
-                                                               │
-                                                               ├─ data aplikasi
-                                                               └─ schema _rep_<site>
-                                                                     ▲
-                                                          dashboard membaca
+                                    │                          ├─ data aplikasi
+                                    │                          └─ schema _rep_<site>
+                                    │                              (riwayat lokal)
+                                    └──POST JSON + Bearer token──► Dashboard
+                                                                   data/<site>.json
 ```
 
 Cara tercepat:
 
 1. Siapkan database aplikasi di master. Database backup boleh dibuat installer.
-2. Jalankan **`replicator-setup.exe`** di komputer agent.
-3. Isi IP master, IP backup, port MySQL, dan password admin MySQL.
-4. Installer membuat user agent, grant, database backup, schema status, config,
-   launcher, autostart, lalu menjalankan agent.
-5. Klik ikon tray untuk memantau replikasi.
-6. Daftarkan site di dashboard dengan schema status yang sama.
+2. Daftarkan site di dashboard (**Tambah site**) dan salin **token agent**-nya.
+3. Jalankan **`replicator-setup.exe`** di komputer agent.
+4. Isi IP master, IP backup, port MySQL, password admin MySQL, lalu **URL ingest**
+   dan **token agent** dashboard (opsional; bisa diisi menyusul).
+5. Installer membuat user agent, grant, database backup, config, launcher,
+   autostart, lalu menjalankan agent.
+6. Klik ikon tray untuk memantau replikasi. Dashboard menampilkan laporan
+   pertama dalam ±60 detik.
 
 Tidak perlu menjalankan SQL manual dan tidak perlu membuat config dari nol.
 
@@ -61,6 +64,7 @@ Tidak perlu menjalankan SQL manual dan tidak perlu membuat config dari nol.
 | Windows | 7, 8, 8.1, 10, atau 11. Ikuti arsitektur binary (32/64-bit). |
 | MySQL | 5.0+ di master dan backup. MySQL 8 juga didukung. |
 | Jaringan | Agent bisa menjangkau port MySQL master dan backup. Port boleh kustom. |
+| Dashboard | Opsional. Agent harus bisa menjangkau URL ingest (HTTP/HTTPS). |
 | Hak Windows | **Tidak perlu Administrator.** Instalasi berjalan per-user. |
 | Waktu | Jam Windows, master, dan backup sebaiknya sinkron (NTP). |
 | Akun MySQL | Satu akun admin (misalnya `root`) yang boleh membuat user dan grant. |
@@ -96,9 +100,10 @@ Aturan penomoran:
 **Agent di dalam LAN site** memakai alamat LAN (`192.168.1.11/.12`).
 **Agent di luar site** memakai alamat VPN (`192.168.101.11/.12`).
 
-Dashboard selalu didaftarkan dengan **alamat VPN**, karena dashboard biasanya
-berada di pusat. Alamat yang diisi di dashboard tidak harus sama dengan alamat
-yang dipakai agent; yang **wajib sama** adalah nama site dan `[status] schema`.
+Dashboard **tidak perlu** bisa menjangkau MySQL site. Yang dibutuhkan hanyalah
+agent bisa menjangkau **URL dashboard** dan dashboard bisa menerima koneksi
+HTTPS/HTTP dari agent. Identitas site ditentukan oleh **token unik** yang diisi
+di `[monitor] token`, bukan oleh IP atau schema.
 
 Port MySQL juga boleh berbeda per server. Installer menyediakan isian **Port**
 terpisah untuk master dan backup, serta opsi `--master-port` / `--backup-port`
@@ -137,6 +142,8 @@ akan terbuka. Isi form berikut:
 | Password admin backup | `...` | Centang "sama dengan master" bila sama. |
 | User agent | `repl_agent` | User yang dibuat installer. |
 | Password agent | otomatis | Sudah terisi; boleh diganti. |
+| URL ingest | `https://monitor.contoh/api.php?action=ingest` | Opsional. Kosongkan untuk menonaktifkan pengiriman laporan. |
+| Token agent | dari tombol **Token** di dashboard | Wajib bila URL ingest diisi. |
 
 Centang yang diinginkan:
 
@@ -145,6 +152,10 @@ Centang yang diinginkan:
   balik backup → master saat master hidup lagi (memberi hak tulis di master).
 - **Jalankan otomatis saat login** — agent hidup lagi setiap kali pengguna login.
 - **Mulai agent sekarang** — agent langsung berjalan setelah instalasi.
+
+Bagian **Dashboard pemantauan (opsional)** di bawah form dipakai untuk mengisi
+URL ingest dan token. Keduanya boleh dikosongkan saat instalasi dan dilengkapi
+kemudian di `config\agent.ini` bagian `[monitor]`.
 
 Klik **Pasang**. Installer menampilkan progres dan berhenti dengan pesan hasil.
 
@@ -160,7 +171,8 @@ Klik **Pasang**. Installer menampilkan progres dan berhenti dengan pesan hasil.
 7. Membuat/memperbarui user agent di backup dengan hak baca-tulis dan DDL.
 8. Menguji login user agent ke master dan backup.
 9. Menulis `replicator-agent.exe`, `config\agent.ini`, `Mulai Agent.vbs`,
-   `Hapus Agent.vbs`, dan `BACA SAYA.txt`.
+   `Hapus Agent.vbs`, dan `BACA SAYA.txt`. Bila URL ingest diisi, installer juga
+   menulis bagian `[monitor]` berisi URL dan token agent.
 10. Mendaftarkan autostart per-user dan menjalankan agent.
 
 Pemilihan charset otomatis: `utf8mb4` untuk MySQL 5.5.3+ dan `utf8` untuk versi
@@ -181,7 +193,8 @@ D:\replicator\
 │  └─ failback.pending      # replikasi balik selesai, menunggu konfirmasi
 └─ logs\
    ├─ agent.log
-   └─ status.json
+   ├─ status.json
+   └─ report.json           # salinan laporan terakhir ke dashboard
 ```
 
 Tidak perlu UAC dan tidak ada file yang ditulis ke `Program Files`, sehingga
@@ -189,19 +202,24 @@ Windows 7 tanpa hak administrator tetap bisa memakai agent.
 
 ### 4.5 Schema status
 
-Installer memakai aturan yang sama dengan dashboard:
+Schema status tetap ditulis agent ke database backup dan berguna untuk riwayat
+lokal serta diagnosa tabel. Dashboard **tidak** membacanya, jadi schema tidak
+lagi harus dicocokkan dengan halaman Site.
+
+Installer memakai aturan:
 
 - Nama site `Jakarta` → schema `_rep_jakarta`.
 - Nama site kosong → `site_<ip master dengan titik menjadi garis bawah>`,
   misalnya master `192.168.101.11` → schema `_rep_site_192_168_101_11`.
 
-Schema status **wajib sama** dengan yang terdaftar di dashboard. Installer
-menampilkan schema yang dipakai pada pesan selesai dan di `BACA SAYA.txt`.
+Yang **wajib sama** antara agent dan dashboard adalah **token** pada bagian
+`[monitor]`.
 
 ### 4.6 Bila ingin mengubah config
 
 Edit `D:\replicator\config\agent.ini`, lalu hentikan dan mulai ulang
 agent dari ikon tray. Perubahan tidak dibaca otomatis saat agent masih berjalan.
+Untuk mengganti URL/token dashboard, ubah bagian `[monitor]`.
 
 ---
 
@@ -227,7 +245,9 @@ Contoh dengan port kustom dan port berbeda per server:
   --backup-host 192.168.101.12 --backup-port 3308 `
   --database appdb `
   --site Jakarta `
-  --admin-user root --admin-password RahasiaAdmin
+  --admin-user root --admin-password RahasiaAdmin `
+  --dashboard-url "https://monitor.contoh/api.php?action=ingest" `
+  --dashboard-token "token-dari-halaman-site"
 ```
 
 ### Opsi lengkap
@@ -248,6 +268,8 @@ Contoh dengan port kustom dan port berbeda per server:
 | `--backup-admin-password <pass>` | Password admin backup saja. |
 | `--agent-user <user>` | User agent yang dibuat (default `repl_agent`). |
 | `--agent-password <pass>` | Password agent (otomatis bila kosong). |
+| `--dashboard-url <url>` | Endpoint ingest dashboard. Kosong = monitoring push nonaktif. |
+| `--dashboard-token <token>` | Token agent site (8–256 karakter tanpa spasi). |
 | `--skip-db-setup` | Jangan buat user/grant/database. |
 | `--no-failback` | Nonaktifkan mode darurat; master hanya diberi hak baca. |
 | `--no-autostart` | Jangan daftarkan autostart. |
@@ -399,7 +421,11 @@ dan mengembalikan kode keluar `1`.
 ```powershell
 Get-Content .\logs\agent.log -Tail 40
 Get-Content .\logs\status.json -Raw
+Get-Content .\logs\report.json -Raw
 ```
+
+`report.json` adalah salinan persis laporan yang dikirim ke dashboard. Cocokkan
+isi dan waktu `generated_at`-nya dengan yang tampil di dashboard.
 
 Di server backup (ganti `_rep_jakarta` sesuai schema site):
 
@@ -420,20 +446,25 @@ Bila tabel sudah terisi dan `tables_error = 0`, agent siap dijalankan permanen.
 
 ## 8. Daftarkan site di dashboard
 
-Buka dashboard, masuk ke menu **Site**, lalu isi:
+Daftarkan site **sebelum** mengisi `[monitor]`, karena token dibuat di dashboard.
+Lihat juga [`DEPLOY-DASHBOARD.md`](DEPLOY-DASHBOARD.md).
 
-1. **Nama site** — samakan dengan nama yang dipakai installer, misalnya `Jakarta`.
-2. **IP master** — alamat VPN master, misalnya `192.168.101.11`.
-3. **IP slave / backup** — alamat VPN backup, misalnya `192.168.101.12`.
-4. **Schema status** — biarkan otomatis, atau isi persis schema dari installer.
-5. Klik **Tambah site**.
+1. Buka dashboard dan klik **Tambah site**.
+2. Isi **Nama site**, misalnya `Jakarta`. ID site dibuat otomatis.
+3. Biarkan **Token agent** kosong agar dashboard membuat token acak, atau isi
+   token sendiri (8–256 karakter tanpa spasi).
+4. Klik **Simpan site**. Token ditampilkan pada banner di atas tabel.
+5. Salin token ke installer (kolom **Token agent**) atau ke bagian `[monitor]`
+   di `config\agent.ini`, lalu mulai ulang agent.
+6. Tombol **Token** pada baris site menampilkan kembali token tersebut.
 
-Dashboard menampilkan potongan config agent. Cocokkan `[status] schema` dengan
-`config\agent.ini`. Bila berbeda, dashboard akan menampilkan site **offline**
-walaupun agent berjalan normal.
+Dashboard tidak meminta IP atau schema lagi. Site ditandai dari token; satu
+token hanya boleh dipakai satu agent. Untuk merotasi token, edit site dan isi
+token baru, lalu perbarui `agent.ini` dan mulai ulang agent.
 
-> Mengubah site di dashboard **tidak** mengubah config agent. Kedua sisi harus
-> memakai schema yang sama; IP hanya informasional di dashboard.
+Setelah laporan pertama masuk (±60 detik), dashboard menampilkan ukuran database
+master/backup dalam MB, status replikasi, online/offline master dan backup, serta
+waktu cek terakhir.
 
 ---
 
@@ -535,7 +566,19 @@ create_database = "true"
 
 [status]
 schema = "_rep"
+
+[monitor]
+enabled = "true"
+url = "https://monitor.contoh/api.php?action=ingest"
+token = "token-dari-halaman-site"
+interval_sec = 60
+size_refresh_sec = 300
+timeout_sec = 5
+report_file = "logs/report.json"
 ```
+
+Tanpa bagian `[monitor]` (atau dengan `url` kosong), agent tetap mereplikasi
+tetapi tidak mengirim laporan ke dashboard.
 
 > Path relatif di dalam config dihitung dari **folder file config**, bukan dari
 > folder exe. `dir = "logs"` di `C:\replicator\config\agent.ini` berarti
@@ -550,7 +593,9 @@ Nilai yang sering disesuaikan:
 | `[sync] exclude_tables` | Kecualikan tabel log/antrian besar. |
 | `[sync] schema_mode` | `auto` untuk produksi, `strict` bila struktur harus tetap. |
 | `[verify] enabled` | `true` agar baris terhapus ikut terhapus. |
-| `[status] heartbeat_write_sec` | `5` agar dashboard tidak menganggap agent mati. |
+| `[status] heartbeat_write_sec` | `5` agar riwayat lokal tetap rapi. |
+| `[monitor] interval_sec` | `60` detik; naikkan bila jaringan lambat. |
+| `[monitor] size_refresh_sec` | `300` detik agar query ukuran DB tidak terlalu sering. |
 
 Mode status pusat: isi `[status] host/port/user/password` dan schema unik per
 site, misalnya `_rep_jakarta`.
@@ -615,7 +660,7 @@ Versi agent yang tertanam terlihat di:
 - judul/pesan selesai installer (`Agent v...`),
 - `replicator-agent.exe --version`,
 - ikon tray dan jendela monitor,
-- halaman Config dashboard (`Versi agent`).
+- baris site pada dashboard (`agent_id · v...`).
 
 Artefak rilis dan daftar versi/hash ada di `dist\VERSIONS.txt`. Panduan update
 dan rollback lengkap ada di [`UPDATE-AGENT.md`](UPDATE-AGENT.md).
@@ -687,8 +732,12 @@ installer versi lama, kolom baru pada schema status (mis. `direction` dan
 | Ikon tray tidak muncul | Agent tidak berjalan | Klik dua kali `Mulai Agent.vbs`, cek `logs\agent.log` |
 | Ikon tray dobel | Dua config berbeda dijalankan | Normal; tiap config punya ikon sendiri |
 | Start tidak berefek | Agent sedang menyelesaikan siklus | Tunggu satu siklus, lalu cek monitor |
-| Site offline di dashboard | Schema agent ≠ schema dashboard | Samakan `[status] schema` dengan halaman Site |
-| Heartbeat basi | Agent keluar / komputer sleep | Buka tray, cek `agent.log`, mulai ulang |
+| Site offline di dashboard | Belum ada laporan / token salah | Cek `logs\report.json`, `agent.log`, lalu samakan token `[monitor]` dengan halaman Site |
+| Ingest ditolak `401` | Token kosong/salah | Salin ulang token dari tombol **Token** di dashboard |
+| Ingest ditolak `422` | `schema_version` laporan tidak didukung | Samakan versi agent dan dashboard |
+| Ingest ditolak `429` | Laporan terlalu sering | Naikkan `[monitor] interval_sec` |
+| Site berstatus **BASI** | Agent keluar / komputer sleep / jaringan putus | Buka tray, cek `agent.log`, mulai ulang agent |
+| Ukuran DB `—` | Database offline atau query ukuran gagal | Cek status online dan pesan masalah di baris site |
 | Tabel `error` | Struktur tabel berbeda / tipe tidak didukung | Lihat `last_error` di `_rep_<site>.table_status` |
 | Semua tabel `idle` | Tidak ada perubahan dan verifikasi belum jalan | Normal; tunggu `[verify] interval_sec` |
 | Baris terhapus tidak ikut terhapus | `[verify] enabled = "false"` | Aktifkan verifikasi |
@@ -722,9 +771,11 @@ installer versi lama, kolom baru pada schema status (mis. `direction` dan
 - [ ] Port master dan backup benar (default `3306`, boleh kustom).
 - [ ] `--check` selesai tanpa masalah.
 - [ ] `--once` menghasilkan `tables_error = 0`.
-- [ ] Schema status berisi heartbeat terbaru di backup.
+- [ ] Schema status berisi heartbeat terbaru di backup (untuk riwayat lokal).
 - [ ] Ikon tray muncul dan monitor menampilkan tabel yang disalin.
 - [ ] Autostart terdaftar di `HKCU\...\Run\ReplicatorAgent`.
-- [ ] Site terdaftar di dashboard dengan schema yang sama.
-- [ ] Kartu site hijau di halaman Ringkasan.
+- [ ] Site terdaftar di dashboard dan tokennya disalin ke `[monitor]`.
+- [ ] `logs\report.json` terisi dan `agent.log` tidak menampilkan error kirim.
+- [ ] Baris site di dashboard menampilkan ukuran DB (MB), status replikasi,
+      online master/backup, dan waktu cek terakhir.
 - [ ] Binary lama disimpan untuk rollback.

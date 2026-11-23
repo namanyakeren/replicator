@@ -37,6 +37,8 @@ pub struct InstallInput {
     pub autostart: bool,
     pub start_now: bool,
     pub failback_enabled: bool,
+    pub dashboard_url: String,
+    pub dashboard_token: String,
 }
 
 impl InstallInput {
@@ -58,6 +60,8 @@ impl InstallInput {
             autostart: true,
             start_now: true,
             failback_enabled: true,
+            dashboard_url: String::new(),
+            dashboard_token: String::new(),
         }
     }
 
@@ -92,6 +96,7 @@ pub struct InstallReport {
     pub failback_enabled: bool,
     pub started: bool,
     pub autostart: bool,
+    pub dashboard_url: Option<String>,
 }
 
 pub fn default_install_dir() -> PathBuf {
@@ -143,6 +148,29 @@ pub fn validate(input: &InstallInput) -> Result<(), String> {
     }
     if input.agent_password.is_empty() {
         return Err("Password agent tidak boleh kosong.".to_string());
+    }
+
+    let dashboard_url = input.dashboard_url.trim();
+    let dashboard_token = input.dashboard_token.trim();
+    if dashboard_url.is_empty() && !dashboard_token.is_empty() {
+        return Err("Token dashboard diisi tetapi URL dashboard masih kosong.".to_string());
+    }
+    if !dashboard_url.is_empty() {
+        if !(dashboard_url.starts_with("http://") || dashboard_url.starts_with("https://"))
+            || dashboard_url.len() > 512
+            || dashboard_url.chars().any(char::is_whitespace)
+        {
+            return Err(
+                "URL dashboard harus diawali http:// atau https://, tanpa spasi, maksimal 512 karakter."
+                    .to_string(),
+            );
+        }
+        if dashboard_token.len() < 8
+            || dashboard_token.len() > 256
+            || dashboard_token.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err("Token dashboard harus 8-256 karakter tanpa spasi.".to_string());
+        }
     }
 
     let schema = input.schema();
@@ -399,6 +427,11 @@ fn install_inner(
         failback_enabled: input.failback_enabled,
         started,
         autostart: input.autostart,
+        dashboard_url: if input.dashboard_url.trim().is_empty() {
+            None
+        } else {
+            Some(input.dashboard_url.trim().to_string())
+        },
     })
 }
 
@@ -533,7 +566,17 @@ fn config_text(input: &InstallInput, site_id: &str, schema: &str, charset: &str)
          \n\
          [notify]\n\
          command = \"\"\n\
-         cooldown_sec = 300\n",
+         cooldown_sec = 300\n\
+         \n\
+         [monitor]\n\
+         ; Kirim laporan status ke dashboard. Nonaktif bila url kosong.\n\
+         enabled = \"{monitor_enabled}\"\n\
+         url = \"{dashboard_url}\"\n\
+         token = \"{dashboard_token}\"\n\
+         interval_sec = 60\n\
+         size_refresh_sec = 300\n\
+         timeout_sec = 5\n\
+         report_file = \"../logs/report.json\"\n",
         site = if input.site.trim().is_empty() {
             "(otomatis dari IP master)".to_string()
         } else {
@@ -550,6 +593,13 @@ fn config_text(input: &InstallInput, site_id: &str, schema: &str, charset: &str)
         database = ini_escape(input.database.trim()),
         charset = ini_escape(charset),
         failback_enabled = if input.failback_enabled { "true" } else { "false" },
+        monitor_enabled = if input.dashboard_url.trim().is_empty() {
+            "false"
+        } else {
+            "true"
+        },
+        dashboard_url = ini_escape(input.dashboard_url.trim()),
+        dashboard_token = ini_escape(input.dashboard_token.trim()),
     )
 }
 
@@ -597,7 +647,8 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
          Database      : {database}\r\n\
          Schema status : {schema}\r\n\
          User agent    : {user}\r\n\
-         Mode darurat  : {failback_status}\r\n\r\n\
+         Mode darurat  : {failback_status}\r\n\
+         Dashboard     : {dashboard_status}\r\n\r\n\
          CARA MEMAKAI\r\n\
          1. Ikon R akan muncul di pojok kanan bawah taskbar.\r\n\
          2. Klik kanan ikon R untuk Mulai agent, Hentikan agent, mode darurat,\r\n\
@@ -615,6 +666,13 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
          PERINGATAN: tabel yang berbeda di master akan DITIMPA data backup.\r\n\
          Pastikan master memang tidak dipakai menulis selama gangguan.\r\n\
          Dari command line: --arm-failback, --failback, --resume-forward.\r\n\r\n\
+         DASHBOARD (PUSH MONITORING)\r\n\
+         Bila diisi, agent mengirim laporan JSON setiap 60 detik ke dashboard:\r\n\
+         URL    : {dashboard_url}\r\n\
+         Token  : tersimpan di config/agent.ini bagian [monitor]\r\n\
+         Laporan berisi status replikasi, masalah, ukuran database master/backup,\r\n\
+         dan status online keduanya. Bila URL/token berubah, edit agent.ini lalu\r\n\
+         mulai ulang agent. Kosongkan url untuk menonaktifkan pengiriman.\r\n\r\n\
          Jika ikon belum muncul, klik dua kali file Mulai Agent.vbs di folder ini.\r\n\r\n\
          Lokasi file:\r\n\
          - Program : {exe}\r\n\
@@ -632,6 +690,16 @@ fn readme_text(input: &InstallInput, schema: &str, logs_dir: &Path) -> String {
             "aktif (konfirmasi manual setelah replikasi balik)"
         } else {
             "nonaktif"
+        },
+        dashboard_status = if input.dashboard_url.trim().is_empty() {
+            "nonaktif".to_string()
+        } else {
+            format!("aktif -> {}", input.dashboard_url.trim())
+        },
+        dashboard_url = if input.dashboard_url.trim().is_empty() {
+            "(belum diisi)"
+        } else {
+            input.dashboard_url.trim()
         },
         master = input.master_host.trim(),
         master_port = input.master_port,

@@ -8,7 +8,9 @@ services:
       - "127.0.0.1:${DASHBOARD_PORT:-8089}:80"
     volumes:
       - ./config:/var/www/config:Z
+      - ./data:/var/www/data:Z
     environment:
       REPLICATOR_CONFIG_FILE: /var/www/replicator-config.php
       REPLICATOR_SITES_FILE: /var/www/config/sites.ini
+      REPLICATOR_DATA_DIR: /var/www/data
     restart: unless-stopped

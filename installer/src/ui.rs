@@ -65,6 +65,12 @@ const ID_STATUS: i32 = 1033;
 const ID_INSTALL: i32 = 1034;
 const ID_CANCEL: i32 = 1035;
 const ID_FAILBACK: i32 = 1036;
+const ID_SECTION_MONITOR: i32 = 1037;
+const ID_DASH_URL_LABEL: i32 = 1038;
+const ID_DASH_URL: i32 = 1039;
+const ID_DASH_TOKEN_LABEL: i32 = 1040;
+const ID_DASH_TOKEN: i32 = 1041;
+const ID_DASH_HINT: i32 = 1042;
 
 const AGENT_VERSION: &str = env!("AGENT_VERSION");
 
@@ -117,7 +123,7 @@ pub fn run() -> Result<i32, String> {
         }
 
         let width = 700;
-        let height = 720;
+        let height = 744;
         let x = (GetSystemMetrics(SM_CXSCREEN) - width).max(0) / 2;
         let y = (GetSystemMetrics(SM_CYSCREEN) - height).max(0) / 2;
         let hwnd = CreateWindowExW(
@@ -449,14 +455,60 @@ unsafe fn create_controls(hwnd: HWND) -> Result<(), String> {
     add_static(
         hwnd,
         instance,
+        "Dashboard pemantauan (opsional)",
+        24,
+        556,
+        500,
+        20,
+        fonts.section,
+        ID_SECTION_MONITOR,
+    );
+    add_static(
+        hwnd,
+        instance,
+        "URL ingest",
+        24,
+        584,
+        150,
+        20,
+        fonts.normal,
+        ID_DASH_URL_LABEL,
+    );
+    add_edit(hwnd, instance, "", 182, 580, 490, 24, false, ID_DASH_URL);
+    add_static(
+        hwnd,
+        instance,
+        "Token agent",
+        24,
+        610,
+        150,
+        20,
+        fonts.normal,
+        ID_DASH_TOKEN_LABEL,
+    );
+    add_edit(hwnd, instance, "", 182, 606, 490, 24, false, ID_DASH_TOKEN);
+    add_static(
+        hwnd,
+        instance,
+        "Kosongkan URL untuk menonaktifkan. Token dibuat di dashboard halaman Site.",
+        182,
+        632,
+        490,
+        16,
+        fonts.small,
+        ID_DASH_HINT,
+    );
+    add_static(
+        hwnd,
+        instance,
         &format!(
             "Agent v{}. Siap. Isi data koneksi lalu klik Pasang.",
             AGENT_VERSION
         ),
         24,
-        556,
+        654,
         630,
-        38,
+        34,
         fonts.small,
         ID_STATUS,
     );
@@ -465,13 +517,13 @@ unsafe fn create_controls(hwnd: HWND) -> Result<(), String> {
         instance,
         "Pasang",
         444,
-        604,
+        694,
         110,
         32,
         ID_INSTALL,
         true,
     );
-    add_button(hwnd, instance, "Batal", 562, 604, 88, 32, ID_CANCEL, false);
+    add_button(hwnd, instance, "Batal", 562, 694, 88, 32, ID_CANCEL, false);
 
     update_backup_password(hwnd);
     update_schema(hwnd);
@@ -789,6 +841,10 @@ fn success_text(report: &install::InstallReport) -> String {
             "nonaktif"
         }
     ));
+    text.push_str(&format!(
+        "Dashboard     : {}\n",
+        report.dashboard_url.as_deref().unwrap_or("nonaktif")
+    ));
     text.push_str("\n");
     if report.started {
         text.push_str(
@@ -814,8 +870,10 @@ fn success_text(report: &install::InstallReport) -> String {
         );
     }
     text.push_str(
-        "PENTING: daftarkan site di dashboard dengan schema status yang sama,\n\
-         lalu jalankan pemeriksaan data pertama dari ikon tray.",
+        "PENTING: token agent yang diisi di form harus sama dengan token site di dashboard.\n\
+         Bila belum diisi, tambahkan bagian [monitor] di config/agent.ini lalu mulai\n\
+         ulang agent. Dashboard akan menampilkan ukuran database, status replikasi,\n\
+         dan status online master/backup dari laporan agent.",
     );
     text
 }
@@ -845,6 +903,8 @@ unsafe fn read_input(hwnd: HWND) -> Result<InstallInput, String> {
     input.autostart = checked(hwnd, ID_AUTOSTART);
     input.start_now = checked(hwnd, ID_START_NOW);
     input.failback_enabled = checked(hwnd, ID_FAILBACK);
+    input.dashboard_url = text(hwnd, ID_DASH_URL).trim().to_string();
+    input.dashboard_token = text(hwnd, ID_DASH_TOKEN).trim().to_string();
     Ok(input)
 }
 

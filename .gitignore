@@ -25,6 +25,8 @@ dashboard/config.ini
 
 # Data runtime dashboard
 config/sites.ini
+data/
+deploy/podman/data/
 
 # Editor / OS
 .vscode/

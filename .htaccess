@@ -6,7 +6,15 @@ Options -Indexes
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    RewriteRule ^(agent|scripts|sql)(/|$) - [F,L]
+    RewriteRule ^(agent|scripts|sql|data|config|docs|tests|deploy)(/|$) - [F,L]
+    # Teruskan header Authorization ke PHP bila memakai PHP-FPM/CGI.
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
+
+# Apache 2.4.13+ dapat meneruskan header Authorization langsung.
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
 </IfModule>
 
 <FilesMatch "\.(ini|log|json|sql|md|toml|lock|rs|bak|old|swp)$">

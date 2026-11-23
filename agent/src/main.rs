@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod failback;
 mod logger;
+mod monitor;
 mod status;
 mod sync;
 mod util;
@@ -23,6 +24,7 @@ use mysql::prelude::*;
 use crate::config::Config;
 use crate::failback::FailbackState;
 use crate::logger::Logger;
+use crate::monitor::MonitorSnapshot;
 use crate::status::{AgentInfo, CycleReport, StatusDb};
 use crate::sync::CycleOutcome;
 
@@ -138,9 +140,20 @@ fn run() -> Result<i32, String> {
     }
 
     let paused = Arc::new(AtomicBool::new(false));
+    let monitor_config = config.clone();
     let mut runner = Runner::new(config, logger.clone());
+    let monitor = monitor::start(
+        &monitor_config,
+        &AgentInfo::from_config(&monitor_config),
+        runner.monitor_snapshot(),
+        running.clone(),
+        logger.clone(),
+    );
     runner.run_loop(running, paused);
     runner.finish();
+    if let Some(monitor) = monitor {
+        monitor.join();
+    }
     Ok(0)
 }
 
@@ -237,7 +250,15 @@ fn run_tray_mode(config: Config, logger: Arc<Logger>) -> Result<i32, String> {
         master_port: config.master.port,
     };
 
+    let monitor_config = config.clone();
     let mut runner = Runner::new(config, logger.clone()).with_ui(ui.clone());
+    let monitor = monitor::start(
+        &monitor_config,
+        &AgentInfo::from_config(&monitor_config),
+        runner.monitor_snapshot(),
+        running.clone(),
+        logger.clone(),
+    );
     let engine_running = running.clone();
     let engine_paused = paused.clone();
     let engine = thread::spawn(move || {
@@ -258,6 +279,9 @@ fn run_tray_mode(config: Config, logger: Arc<Logger>) -> Result<i32, String> {
     running.store(false, Ordering::SeqCst);
     thread::sleep(Duration::from_millis(400));
     drop(engine);
+    if let Some(monitor) = monitor {
+        monitor.join();
+    }
     result.map(|_| 0)
 }
 
@@ -616,6 +640,7 @@ struct Runner {
     last_prune: Option<Instant>,
     last_state: String,
     ui: Option<Arc<Mutex<UiState>>>,
+    monitor: Arc<Mutex<MonitorSnapshot>>,
 }
 
 impl Runner {
@@ -636,12 +661,35 @@ impl Runner {
             last_prune: None,
             last_state: "starting".to_string(),
             ui: None,
+            monitor: Arc::new(Mutex::new(MonitorSnapshot::default())),
         }
     }
 
     fn with_ui(mut self, ui: Arc<Mutex<UiState>>) -> Runner {
         self.ui = Some(ui);
         self
+    }
+
+    fn monitor_snapshot(&self) -> Arc<Mutex<MonitorSnapshot>> {
+        self.monitor.clone()
+    }
+
+    fn update_monitor(&self, update: impl FnOnce(&mut MonitorSnapshot)) {
+        let mut snapshot = self
+            .monitor
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        update(&mut snapshot);
+    }
+
+    fn failback_state_text(&self) -> String {
+        if self.failback.is_pending() {
+            "pending".to_string()
+        } else if self.failback.is_armed() {
+            "waiting".to_string()
+        } else {
+            "off".to_string()
+        }
     }
 
     fn run_loop(&mut self, running: Arc<AtomicBool>, paused: Arc<AtomicBool>) {
@@ -1580,6 +1628,15 @@ impl Runner {
         table_total: usize,
         message: &str,
     ) {
+        self.update_monitor(|snapshot| {
+            snapshot.state = state.to_string();
+            snapshot.direction = self.direction.clone();
+            snapshot.failback_state = self.failback_state_text();
+            snapshot.cycle_no = self.cycle_no;
+            snapshot.message = message.to_string();
+            snapshot.last_error = None;
+            snapshot.touch();
+        });
         let Some(ui) = &self.ui else {
             return;
         };
@@ -1598,6 +1655,17 @@ impl Runner {
     }
 
     fn publish_failback(&self, armed: bool, failback_state: &str, state: &str, message: &str) {
+        self.update_monitor(|snapshot| {
+            snapshot.state = state.to_string();
+            snapshot.direction = self.direction.clone();
+            snapshot.failback_state = failback_state.to_string();
+            snapshot.cycle_no = self.cycle_no;
+            snapshot.message = message.to_string();
+            if state != "error" {
+                snapshot.last_error = None;
+            }
+            snapshot.touch();
+        });
         let Some(ui) = &self.ui else {
             return;
         };
@@ -1619,6 +1687,16 @@ impl Runner {
     }
 
     fn publish_paused(&self) {
+        self.update_monitor(|snapshot| {
+            snapshot.state = "paused".to_string();
+            snapshot.direction = self.direction.clone();
+            snapshot.failback_state = self.failback_state_text();
+            snapshot.message =
+                "Agent dihentikan. Siklus yang sedang berjalan diselesaikan dulu.".to_string();
+            snapshot.cycle_no = self.cycle_no;
+            snapshot.last_error = None;
+            snapshot.touch();
+        });
         let Some(ui) = &self.ui else {
             return;
         };
@@ -1638,6 +1716,24 @@ impl Runner {
     }
 
     fn publish_outcome(&self, state: &str, outcome: Option<&CycleOutcome>, message: &str) {
+        self.update_monitor(|snapshot| {
+            snapshot.state = state.to_string();
+            snapshot.direction = self.direction.clone();
+            snapshot.failback_state = self.failback_state_text();
+            snapshot.cycle_no = self.cycle_no;
+            if let Some(outcome) = outcome {
+                snapshot.tables_total = outcome.tables_total as u64;
+                snapshot.tables_ok = outcome.tables_ok as u64;
+                snapshot.tables_error = outcome.tables_error as u64;
+                snapshot.rows_read = outcome.rows_read;
+                snapshot.rows_written = outcome.rows_written;
+            }
+            snapshot.message = message.to_string();
+            if state != "error" {
+                snapshot.last_error = None;
+            }
+            snapshot.touch();
+        });
         let Some(ui) = &self.ui else {
             return;
         };
@@ -1667,6 +1763,22 @@ impl Runner {
         error: Option<&str>,
         duration_ms: u64,
     ) {
+        self.update_monitor(|snapshot| {
+            snapshot.state = state.to_string();
+            snapshot.direction = self.direction.clone();
+            snapshot.failback_state = self.failback_state_text();
+            snapshot.cycle_no = self.cycle_no;
+            if let Some(outcome) = outcome {
+                snapshot.tables_total = outcome.tables_total as u64;
+                snapshot.tables_ok = outcome.tables_ok as u64;
+                snapshot.tables_error = outcome.tables_error as u64;
+                snapshot.rows_read = outcome.rows_read;
+                snapshot.rows_written = outcome.rows_written;
+            }
+            snapshot.message = message.to_string();
+            snapshot.last_error = error.map(|error| error.to_string());
+            snapshot.touch();
+        });
         let path = match &self.config.status_file {
             Some(path) => path,
             None => return,

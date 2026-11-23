@@ -261,6 +261,20 @@ pub fn approx_rows(conn: &mut Conn, database: &str, table: &str) -> Result<u64, 
         .unwrap_or(0))
 }
 
+/// Total ukuran data + index sebuah database dalam byte. Dipakai laporan
+/// monitoring; nilainya bisa sedikit berbeda dari ukuran di disk karena
+/// information_schema memakai statistik tabel.
+pub fn database_size(conn: &mut Conn, database: &str) -> Result<u64, String> {
+    Ok(conn
+        .exec_first::<u64, _, _>(
+            "SELECT CAST(COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) AS UNSIGNED) \
+             FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?",
+            (database,),
+        )
+        .map_err(err_msg)?
+        .unwrap_or(0))
+}
+
 pub fn columns(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<Column>, String> {
     let rows = conn
         .exec::<Row, _, _>(

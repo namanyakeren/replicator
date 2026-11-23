@@ -50,7 +50,7 @@ Versi agent juga terlihat di:
 - `replicator-agent.exe --version`;
 - tooltip, menu, dan jendela monitor ikon tray;
 - pesan selesai installer dan `BACA SAYA.txt`;
-- halaman **Config** dashboard pada baris **Versi agent**;
+- baris site pada dashboard (`agent_id · v...`);
 - kolom `version` di tabel `_rep_<site>.agent`.
 
 ---
@@ -74,8 +74,8 @@ Test-Path "$dir\config\failback.pending"
 Copy-Item "$dir\replicator-agent.exe" "$dir\replicator-agent.exe.bak" -Force
 Copy-Item "$dir\config\agent.ini" "$dir\config\agent.ini.bak" -Force
 
-# 4. Catat schema status dari dashboard / config
-Select-String -Path "$dir\config\agent.ini" -Pattern 'schema'
+# 4. Catat URL/token dashboard dan schema status dari config
+Select-String -Path "$dir\config\agent.ini" -Pattern 'schema|\[monitor\]|url|token'
 ```
 
 > Jangan mengupdate saat mode darurat aktif atau saat replikasi balik sedang
@@ -99,7 +99,8 @@ lalu menjalankan agent kembali. Database tidak dihapus.
 1. Salin `replicator-setup.exe` versi baru ke komputer.
 2. Klik dua kali installer.
 3. Isi alamat master, backup, port, database, site, dan akun seperti pemasangan
-   pertama.
+   pertama. Isi juga **URL ingest** dan **token agent** agar monitoring push
+   tetap aktif.
 4. Biarkan **Aktifkan mode darurat/failback** tercentang bila ingin failback.
 5. Klik **Pasang**, lalu periksa pesan selesai (versi agent tampil di sana).
 
@@ -113,7 +114,9 @@ lalu menjalankan agent kembali. Database tidak dihapus.
   --master-host 192.168.101.11 --master-port 3306 `
   --backup-host 192.168.101.12 --backup-port 3306 `
   --database appdb --site Jakarta `
-  --admin-password RahasiaAdmin
+  --admin-password RahasiaAdmin `
+  --dashboard-url "https://monitor.contoh/api.php?action=ingest" `
+  --dashboard-token "token-dari-halaman-site"
 ```
 
 Tambahkan `--no-failback` bila agent tidak boleh menulis balik ke master.
@@ -165,10 +168,11 @@ mulai (MySQL 5.x kompatibel). Tidak perlu migrasi manual.
 
 ### 5.3 Dashboard
 
-- Halaman **Config** menampilkan **Versi agent**, **Arah replikasi**, dan
-  **Mode darurat**.
-- Kartu site di halaman **Overview** menampilkan `v<versi>` dan penanda
-  `darurat` bila mode darurat aktif.
+- Baris site menampilkan `agent_id · v<versi>` dari laporan agent.
+- Status replikasi, ukuran DB, online/offline, dan waktu cek terakhir berasal
+  dari laporan yang sama.
+- Setelah update, tunggu satu interval laporan (±60 detik) atau klik tombol
+  muat ulang.
 
 ### 5.4 Database status
 
@@ -244,6 +248,7 @@ bila perlu.
 
 | Versi | Perubahan utama |
 |---|---|
+| `1.3.0` | Push monitoring: agent mengirim laporan JSON (status, masalah, ukuran DB master/backup, online/offline) ke dashboard; dashboard tidak lagi membuka koneksi MySQL site. |
 | `1.2.0` | Failback membandingkan backup vs master dan hanya menyalin tabel yang berbeda; status **pending** setelah replikasi balik sampai operator memilih **Mulai replikasi maju** (`--resume-forward`). |
 | `1.1.0` | Mode darurat/failback (backup → master), kolom arah & failback pada status, versi agent di tray/installer/dashboard, manifest `dist/VERSIONS.txt`. |
 | `1.0.0` | Rilis awal: replikasi master → backup, installer satu file, tray, monitor, autostart, uninstall. |
@@ -256,7 +261,7 @@ bila perlu.
 |---|---|---|
 | `--version` masih versi lama | Binary lama masih berjalan / file terkunci | Hentikan agent, ulangi copy, cek `--version`. |
 | Ikon tray tidak muncul setelah update | Launcher tidak dijalankan | Klik dua kali `Mulai Agent.vbs`, cek `logs\agent.log`. |
-| Dashboard tetap menampilkan versi lama | Heartbeat belum diperbarui | Tunggu satu siklus / refresh; cek `_rep.<site>.agent.version`. |
+| Dashboard tetap menampilkan versi lama | Laporan belum diperbarui | Tunggu satu interval / refresh; cek `logs\report.json` dan token `[monitor]`. |
 | Mode darurat langsung aktif setelah update | File `config\failback.armed` tersisa | Matikan lewat tray atau `--disarm-failback`. |
 | Replikasi maju tidak jalan setelah failback | Status **pending** menunggu konfirmasi | Verifikasi data lalu pilih **Mulai replikasi maju** atau `--resume-forward`. |
 | Installer berhenti di tengah | Agent masih berjalan / antivirus | Hentikan agent, nonaktifkan sementara antivirus, ulangi. |

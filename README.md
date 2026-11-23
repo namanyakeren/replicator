@@ -47,6 +47,7 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 - Batch insert yang dapat diatur untuk tabel besar.
 - Heartbeat ringan agar siklus panjang tidak terlihat mati.
 - Status, riwayat siklus, dan kejadian ditulis ke schema status pada backup.
+- **Push monitoring**: laporan JSON berisi status replikasi, masalah, ukuran DB master/backup, dan status online dikirim ke dashboard setiap ±60 detik.
 - Notifikasi eksternal lewat perintah/HTTP hook saat error atau pulih.
 - **Installer satu file** (`replicator-setup.exe`) yang membuat config, user MySQL, grant, database backup, dan schema status otomatis.
 - **Ikon tray** dengan menu Mulai, Hentikan, Monitor replikasi, Buka log, dan Keluar.
@@ -61,19 +62,23 @@ Replicator menyalin data dari **satu MySQL master** ke **satu MySQL backup** di 
 ### Dashboard (PHP native)
 
 - Satu dashboard untuk banyak site.
-- Tambah, edit, dan hapus site dari halaman utama dengan kredensial `repl_agent` per-site.
-- Status agent, heartbeat, tabel berhasil/error, dan ukuran database master/backup.
+- Menerima laporan JSON dari agent (push); tidak membuka koneksi MySQL ke site.
+- Tambah, edit, dan hapus site dari halaman utama; setiap site punya token agent unik.
+- Status replikasi, masalah, ukuran database master/backup (MB), online/offline, dan waktu cek terakhir.
+- Deteksi laporan basi (stale) dan riwayat sehat 24 jam.
 - Polling berkala dan tema terang/gelap.
 - Tanpa login; batasi akses dashboard ke jaringan tepercaya.
-- Tidak membutuhkan framework, Composer, atau build frontend.
+- Tidak membutuhkan framework, Composer, ekstensi MySQL, atau build frontend.
 
 ---
 
 ## Arsitektur
 
-### Mode langsung (default)
+### Push monitoring (default)
 
-Setiap site menyimpan statusnya sendiri di database backup. Dashboard membuka koneksi ke MySQL backup tiap site lewat VPN.
+Agent di setiap site membaca master, menulis backup, lalu mengirim laporan JSON
+ke dashboard. Dashboard hanya menyimpan laporan dan tidak membutuhkan akses
+MySQL ke site.
 
 ```text
                          VPN / jaringan internal
@@ -84,25 +89,27 @@ Setiap site menyimpan statusnya sendiri di database backup. Dashboard membuka ko
    │   │ MySQL      │ ────────► │ MySQL  │  │ MySQL      │ ...   │
    │   │ master .11 │           │ backup │  │ master .11 │       │
    │   └────────────┘           │ .12    │  └────────────┘       │
-   │                            │ _rep   │                       │
    │                            └────┬───┘                       │
-   │                                 │ SELECT                    │
+   │                                 │ POST JSON + Bearer token   │
    │                          ┌──────▼─────────┐                 │
    │                          │ Dashboard PHP  │                 │
-   │                          │ satu instance  │                 │
+   │                          │ data/<site>.json│                │
    │                          └────────────────┘                 │
    └─────────────────────────────────────────────────────────────┘
 ```
 
-### Cara dashboard membaca status setiap site
+### Cara dashboard menerima status
 
-Agent menulis heartbeat dan hasil replikasi ke schema status MySQL pada backup.
-Dashboard membaca tabel `agent` pada setiap backup dan mengukur ukuran database
-aplikasi master serta backup melalui `information_schema`.
+Agent menyusun laporan berisi status replikasi, daftar masalah, ukuran database
+master/backup (`information_schema`), dan status online keduanya. Laporan
+dikirim ke `api.php?action=ingest` dengan header `Authorization: Bearer <token>`.
+Dashboard mencocokkan token ke site, memvalidasi laporan, lalu menyimpannya di
+`data/<site>.json` beserta riwayat 24 jam.
 
-Status online/offline dihitung dari heartbeat agent yang tersimpan pada schema
-status backup. Dashboard membaca ukuran database master dan backup secara
-langsung melalui `information_schema`.
+Ukuran database dihitung ulang paling sering setiap 5 menit; di antaranya agent
+hanya mengecek TCP, sehingga query `information_schema` tidak terlalu sering.
+Dashboard menandai site **BASI** bila tidak ada laporan lebih dari 3× interval
+(minimal 90 detik).
 
 ---
 
@@ -116,6 +123,7 @@ replicator/
 │  │  ├─ db.rs                    # Koneksi MySQL
 │  │  ├─ failback.rs              # Penanda mode darurat + status pending
 │  │  ├─ main.rs                  # CLI, runner, notifikasi, failback
+│  │  ├─ monitor.rs               # Laporan JSON + push ke dashboard
 │  │  ├─ status.rs                # Tabel _rep, heartbeat, event, migrasi kolom
 │  │  ├─ sync.rs                  # Full load, incremental, verifikasi
 │  │  ├─ tray.rs                  # Ikon tray + monitor replikasi GDI
@@ -129,11 +137,12 @@ replicator/
 │  └─ build.rs                    # Menyematkan agent + versinya
 ├─ dashboard/                     # Document root PHP (tanpa config)
 │  ├─ index.php
-│  ├─ api.php                     # JSON API, site registry, status polling
+│  ├─ api.php                     # JSON API ingest/status, registry site
 │  └─ assets/                     # Swiss editorial UI + polling client
 ├─ config/
 │  ├─ agent.example.ini           # Template environment agent
-│  └─ sites.ini                   # Lokal; kredensial per-site (diabaikan Git)
+│  └─ sites.ini                   # Lokal; nama + token site (diabaikan Git)
+├─ data/                          # Lokal; laporan + riwayat 24 jam (diabaikan Git)
 ├─ docs/
 │  ├─ DEPLOY-AGENT.md             # Tutorial deploy agent + mode darurat
 │  ├─ DEPLOY-DASHBOARD.md         # Tutorial deploy dashboard
@@ -166,9 +175,10 @@ replicator/
 
 ### Dashboard
 
-- PHP 8+ dengan ekstensi `pdo_mysql`.
-- Akses jaringan ke MySQL master dan backup setiap site.
-- Kredensial MySQL `repl_agent` per-site.
+- PHP 8+ (tanpa ekstensi MySQL).
+- Folder `config/` dan `data/` dapat ditulis oleh proses PHP.
+- Menerima koneksi HTTP/HTTPS dari agent (atau dari reverse proxy).
+- Tidak memerlukan akses jaringan ke MySQL site.
 
 ### Pengembangan agent
 
@@ -202,6 +212,8 @@ agent, lalu klik dua kali. Isi form:
 | User admin MySQL | `root` |
 | Password admin | password admin server |
 | User agent | `repl_agent` |
+| URL ingest dashboard | `https://monitor.contoh/api.php?action=ingest` (opsional) |
+| Token agent | dari tombol **Token** di dashboard |
 
 Centang **Aktifkan mode darurat/failback** (default aktif) bila agent boleh
 menyalin balik backup → master saat master hidup lagi.
@@ -212,6 +224,7 @@ Installer otomatis:
 2. membuat user `repl_agent` di backup dengan hak baca-tulis dan DDL;
 3. membuat database aplikasi di backup dan schema status `_rep_<site>`;
 4. menulis `config\agent.ini`, `replicator-agent.exe`, launcher, dan uninstaller;
+   termasuk bagian `[monitor]` bila URL ingest diisi;
 5. mendaftarkan autostart per-user lalu menjalankan agent.
 
 Database aplikasi **harus sudah ada di master**; backup boleh dibuat installer.
@@ -225,7 +238,9 @@ Pemasangan tanpa tampilan:
   --backup-host 192.168.101.12 --backup-port 3308 `
   --site Jakarta `
   --admin-password RahasiaAdmin `
-  --agent-password RahasiaAgent
+  --agent-password RahasiaAgent `
+  --dashboard-url "https://monitor.contoh/api.php?action=ingest" `
+  --dashboard-token "token-dari-halaman-site"
 ```
 
 Panduan lengkap: [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md).
@@ -236,9 +251,10 @@ Panduan lengkap: [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md).
 php -S 127.0.0.1:8089 -t dashboard
 ```
 
-Buka `http://127.0.0.1:8089/`, lalu tambahkan site. Masukkan host, port, nama
-database, schema status yang sama dengan agent, dan password `repl_agent`.
-Registry tersimpan di `config/sites.ini`. Lihat
+Buka `http://127.0.0.1:8089/`, lalu tambahkan site. Isi **Nama site** dan biarkan
+**Token agent** kosong agar dibuat otomatis. Salin token ke installer atau ke
+bagian `[monitor]` di `config\agent.ini`. Registry tersimpan di
+`config/sites.ini`, laporan di `data/`. Lihat
 [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md).
 
 ### 4. Pantau agent dari ikon tray
@@ -276,9 +292,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
     IDENTIFIED BY 'GANTI_PASSWORD_BACKUP';
 GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES
     ON `_rep%`.* TO 'repl_agent'@'%';
-
--- Dashboard memakai kredensial repl_agent yang sama dengan agent.
 ```
+
+Dashboard **tidak memakai** kredensial MySQL ini; laporan dikirim agent.
 
 File grant agent ada di [`sql/master_user.sql`](sql/master_user.sql) dan [`sql/backup_user.sql`](sql/backup_user.sql).
 
@@ -303,6 +319,19 @@ port = 3306
 user = "repl_agent"
 password = "GANTI_PASSWORD_BACKUP"
 database = "appdb"
+```
+
+Untuk mengirim laporan ke dashboard, tambahkan:
+
+```ini
+[monitor]
+enabled = "true"
+url = "https://monitor.contoh/api.php?action=ingest"
+token = "token-dari-halaman-site"
+interval_sec = 60
+size_refresh_sec = 300
+timeout_sec = 5
+report_file = "logs/report.json"
 ```
 
 Uji lalu jalankan mode tray:
@@ -336,7 +365,7 @@ Panduan langkah demi langkah (Bahasa Indonesia) untuk mesin produksi:
 |---|---|
 | [`docs/DEPLOY-AGENT.md`](docs/DEPLOY-AGENT.md) | Installer satu file, port MySQL kustom, pembuatan user/grant otomatis, ikon tray + monitor, mode darurat (failback), uji `--check`/`--once`, pemasangan manual, autostart/Scheduled Task, update/uninstall/rollback, troubleshooting. |
 | [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md) | Update agent lewat installer atau binary saja, pemeriksaan versi, update grant failback, rollback, dan riwayat versi. |
-| [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | Dashboard PHP baru, pengelolaan site, kredensial `repl_agent`, dan deployment tanpa container. |
+| [`docs/DEPLOY-DASHBOARD.md`](docs/DEPLOY-DASHBOARD.md) | Dashboard PHP push monitoring, token site, penyimpanan laporan, dan deployment tanpa container. |
 
 Ringkasnya: **agent dipasang di tiap site** (Windows 7–11) dan **dashboard cukup
 satu instance** di lokasi yang bisa menjangkau database status semua site.
@@ -345,7 +374,7 @@ satu instance** di lokasi yang bisa menjangkau database status semua site.
 
 ## Agent dan dashboard
 
-Agent memakai config-nya sendiri. Dashboard menyimpan daftar site dan password MySQL per-site di registry lokal.
+Agent memakai config-nya sendiri. Dashboard menyimpan daftar site dan token agent di registry lokal.
 
 | Environment | Template | File aktif | Dibaca oleh |
 |---|---|---|---|
@@ -371,11 +400,11 @@ dan disimpan di `config/sites.ini`.
 
 ## Dashboard site registry
 
-Tambahkan site pada halaman utama. Setiap entri berisi host master/backup,
-port, schema status, nama database aplikasi, dan password `repl_agent`.
-Password tersimpan per-site di `config/sites.ini`; nama user `repl_agent`
-tetap. Schema wajib sama dengan `[status] schema` pada agent. Penghapusan dari
-dashboard hanya menghapus entri registry, bukan data MySQL.
+Tambahkan site pada halaman utama. Setiap entri berisi nama site dan token agent
+unik. Token disimpan di `config/sites.ini` dan disalin ke `[monitor]` pada
+`agent.ini`. Agent mengirim laporan dengan header `Authorization: Bearer`.
+Penghapusan dari dashboard hanya menghapus entri registry, laporan, dan riwayat;
+bukan data MySQL.
 
 ---
 
@@ -383,7 +412,7 @@ dashboard hanya menghapus entri registry, bukan data MySQL.
 
 Alamat lokal di dalam site tetap sama, misalnya `192.168.1.11` (master) dan `192.168.1.12` (backup). Dari dashboard/agent yang terhubung VPN, alamat yang dipakai adalah alamat site tersebut.
 
-| Site | Master (VPN) | Backup (VPN) | Schema status |
+| Site | Master (VPN) | Backup (VPN) | Schema lokal (riwayat) |
 |---|---|---|---|
 | Jakarta | `192.168.101.11` | `192.168.101.12` | `_rep_jakarta` |
 | Bandung | `192.168.102.11` | `192.168.102.12` | `_rep_bandung` |
@@ -392,7 +421,7 @@ Alamat lokal di dalam site tetap sama, misalnya `192.168.1.11` (master) dan `192
 | Site lain | `192.168.xxx.11` | `192.168.xxx.12` | `_rep_<id>` |
 | Site lain | `192.169.xxx.11` | `192.169.xxx.12` | `_rep_<id>` |
 
-Agent biasanya berjalan di mesin yang sama dengan backup, sehingga `[master] host` dapat memakai IP lokal `192.168.1.11`. Bila agent berjalan dari lokasi lain, gunakan IP VPN.
+Agent biasanya berjalan di mesin yang sama dengan backup, sehingga `[master] host` dapat memakai IP lokal `192.168.1.11`. Bila agent berjalan dari lokasi lain, gunakan IP VPN. Dashboard tidak perlu menjangkau alamat-alamat ini; cukup agent yang menjangkau URL dashboard.
 
 ---
 
@@ -539,9 +568,13 @@ max_files = 5
 
 [agent]
 status_file = "logs/status.json"
+
+[monitor]
+report_file = "logs/report.json"
 ```
 
-Path relatif dihitung dari folder file config.
+Path relatif dihitung dari folder file config. `report.json` berisi salinan
+laporan terakhir yang dikirim ke dashboard.
 
 ### Notifikasi
 
@@ -588,10 +621,10 @@ juga terlihat di:
 - `replicator-agent.exe --version`;
 - tooltip, menu, dan jendela monitor ikon tray;
 - pesan selesai installer dan `BACA SAYA.txt`;
-- halaman **Config** dashboard dan kartu site di **Overview**;
+- baris site pada dashboard (`agent_id · v...`);
 - kolom `version` pada tabel `_rep_<site>.agent`.
 
-Versi saat ini: **agent 1.2.0**, **installer 1.2.0**, **dashboard 2.0.0**.
+Versi saat ini: **agent 1.3.0**, **installer 1.3.0**.
 Panduan update dan rollback: [`docs/UPDATE-AGENT.md`](docs/UPDATE-AGENT.md).
 
 ---
@@ -647,34 +680,34 @@ Build MSVC:
 ## Deploy dashboard
 
 Dashboard berjalan sebagai aplikasi PHP tanpa database sendiri atau autentikasi.
-Siapkan PHP 8+ dengan `pdo_mysql`, pastikan host dapat
-mengakses MySQL master dan backup, lalu jalankan dari root repo:
+Siapkan PHP 8+ (tanpa ekstensi MySQL) dan folder `config/` serta `data/` yang
+dapat ditulis, lalu jalankan dari root repo:
 
 ```sh
 php -S 127.0.0.1:8089 -t dashboard
 ```
 
-Buka `http://127.0.0.1:8089/`. Tambahkan site dari halaman utama; registry dan
-password MySQL per-site tersimpan di `config/sites.ini` (diabaikan Git). Gunakan
-user `repl_agent` yang sama dengan agent. Untuk akses jaringan, gunakan HTTPS
-dan VPN/proxy terpercaya karena dashboard tidak memiliki login.
+Buka `http://127.0.0.1:8089/`. Tambahkan site dari halaman utama; registry token
+tersimpan di `config/sites.ini` dan laporan di `data/` (keduanya diabaikan Git).
+Salin token ke `[monitor]` pada agent. Untuk akses jaringan, gunakan HTTPS dan
+VPN/proxy terpercaya karena dashboard tidak memiliki login.
 
 ## Grant MySQL
 
-Installer membuat user `repl_agent` dan grant yang diperlukan. Dashboard
-menggunakan kredensial per-site yang sama untuk membaca schema status dan ukuran
-database melalui `information_schema`.
+Installer membuat user `repl_agent` dan grant yang diperlukan. Dashboard tidak
+memakai kredensial MySQL; agent mengirim laporan statusnya sendiri.
 
 ---
 
 ## Keamanan
 
-- Jangan menaruh `config/agent.ini` atau `config/sites.ini` di document root.
+- Jangan menaruh `config/agent.ini`, `config/sites.ini`, atau `data/` di document root.
 - Document root harus folder `dashboard/`, bukan root repositori.
 - Gunakan HTTPS atau akses dashboard hanya lewat VPN.
 - Dashboard tanpa login: batasi akses ke VPN/jaringan terpercaya dan gunakan HTTPS untuk akses jaringan.
-- Kredensial repl_agent per-site disimpan di `config/sites.ini`; batasi permission file tersebut.
-- Ganti password bila file config pernah tersalin ke mesin lain.
+- Token agent di `config/sites.ini` setara kata sandi; batasi permission file tersebut.
+- Gunakan `https://` pada `[monitor] url` bila laporan melewati jaringan publik; jangan taruh token di URL.
+- Ganti token bila file config pernah tersalin ke mesin lain, lalu perbarui `agent.ini`.
 - Dashboard tidak menyediakan tombol tulis; force full dilakukan manual lewat SQL.
 
 ---
@@ -708,10 +741,30 @@ instalasi installer, file ada di
 Stop berlaku setelah siklus yang sedang berjalan selesai, supaya data tidak
 setengah tertulis. Tunggu satu siklus atau lihat progres di monitor.
 
-### Dashboard gagal terhubung ke MySQL
+### Site offline di dashboard
 
-- Periksa user/password `repl_agent` pada entri site.
-- Pastikan host dashboard diizinkan oleh grant MySQL dan jaringan dapat mencapai master serta backup.
+- Pastikan `config\agent.ini` berisi `[monitor] enabled = "true"` dan `url` benar.
+- Cocokkan token agent dengan halaman **Site** (tombol **Token**).
+- Lihat `logs\report.json` dan `logs\agent.log` untuk error pengiriman.
+- Pastikan agent bisa menjangkau URL dashboard (firewall/proxy/VPN).
+
+### Ingest ditolak `401`, `422`, atau `429`
+
+- `401`: token kosong atau tidak dikenal. Salin ulang token dari dashboard.
+- `422`: `schema_version` laporan tidak didukung. Samakan versi agent dan dashboard.
+- `429`: laporan datang kurang dari 1 detik setelah laporan sebelumnya. Naikkan
+  `[monitor] interval_sec`.
+
+### Dashboard menampilkan **BASI** / laporan lama
+
+- Agent mati, hang, atau komputer sleep.
+- Jaringan VPN/proxy ke dashboard putus.
+- Periksa `logs\agent.log` dan `logs\report.json`.
+
+### Ukuran DB tampil `—`
+
+Database offline atau query `information_schema` gagal. Lihat status online dan
+pesan masalah pada baris site; periksa juga `error` di `logs\report.json`.
 
 ### `Schema _rep... belum lengkap`
 
@@ -721,28 +774,12 @@ Jalankan agent sekali:
 .\dist\replicator-agent.exe --once --config .\config\agent.ini
 ```
 
-Atau periksa `status_schema` di dashboard sama dengan `[status] schema` di agent.
-
-### Dashboard menampilkan `Tidak aktif` / heartbeat basi
-
-- Agent mati, hang, atau tidak bisa menulis ke database status.
-- Jaringan VPN putus.
-- Waktu server tidak sinkron.
-- Periksa log agent dan pastikan heartbeat berumur kurang dari 120 detik.
-
-### `pdo_mysql` tidak aktif
-
-Aktifkan di `php.ini`:
-
-```ini
-extension=pdo_mysql
-```
-
-Lalu restart Apache/IIS/PHP.
+Schema ini hanya untuk riwayat lokal; dashboard tidak membacanya.
 
 ### Tabel berstatus `error`
 
-Buka halaman **Tabel** dan lihat kolom Keterangan. Penyebab umum:
+Buka pesan masalah pada baris site di dashboard, atau kolom `last_error` pada
+schema status. Penyebab umum:
 
 - Checksum berbeda → full load berikutnya.
 - Deadlock → agent mencoba ulang, tetapi bisa tetap error.
@@ -797,8 +834,8 @@ Untuk membatalkan semuanya tanpa replikasi balik:
 
 ## Checklist produksi
 
-- [ ] Kredensial `repl_agent` per-site dibatasi dan registry lokal dilindungi.
-- [ ] Document root menunjuk ke `dashboard/`.
+- [ ] Token agent per-site dibuat di dashboard dan disalin ke `[monitor]`.
+- [ ] Document root menunjuk ke `dashboard/`; folder `data/` tidak dapat diakses langsung.
 - [ ] Installer dijalankan dan `install.log` tidak berisi `GAGAL`.
 - [ ] Port MySQL master dan backup benar (default `3306`, boleh kustom).
 - [ ] Grant agent dibatasi ke host/IP yang benar.
@@ -809,6 +846,7 @@ Untuk membatalkan semuanya tanpa replikasi balik:
 - [ ] NTP aktif di master dan backup.
 - [ ] Notifikasi eksternal diuji.
 - [ ] Dashboard diuji dari jaringan VPN yang sama dengan operator.
+- [ ] `logs\report.json` terisi dan dashboard menampilkan ukuran DB, status replikasi, serta online master/backup.
 - [ ] Backup database aplikasi dijadwalkan.
 - [ ] Log agent dipantau dan dibersihkan berkala.
 
